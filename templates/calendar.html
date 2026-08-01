@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}Content Calendar – Elite Legacy Marketing{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+    <div>
+        <span class="badge">PLANNING</span>
+        <h1>30-Day Content Calendar</h1>
+        <p class="muted">Your latest content ideas organised into a simple plan.</p>
+    </div>
+
+    <a class="button" href="{{ url_for('generate') }}">
+        Generate More Ideas
+    </a>
+</div>
+
+<section class="section">
+
+    {% if ideas %}
+
+        <div class="calendar-grid">
+
+            {% for idea in ideas %}
+
+                <article class="calendar-card">
+
+                    <div class="calendar-day">
+                        Day {{ loop.index }}
+                    </div>
+
+                    <span class="pill">{{ idea["platform"] }}</span>
+
+                    <h3>{{ idea["title"] }}</h3>
+
+                    <p>
+                        <strong>Audience:</strong>
+                        {{ idea["audience"] }}
+                    </p>
+
+                    <p>
+                        <strong>Goal:</strong>
+                        {{ idea["goal"] }}
+                    </p>
+
+                    <p>
+                        <strong>CTA:</strong>
+                        {{ idea["cta"] }}
+                    </p>
+
+                    <a
+                        class="button small ghost"
+                        href="{{ url_for('library') }}"
+                    >
+                        View in Library
+                    </a>
+
+                </article>
+
+            {% endfor %}
+
+        </div>
+
+    {% else %}
+
+        <div class="empty">
+            <h3>Your calendar is empty</h3>
+            <p class="muted">
+                Generate some content ideas first, then they will appear here.
+            </p>
+
+            <a class="button" href="{{ url_for('generate') }}">
+                Generate Content
+            </a>
+        </div>
+
+    {% endif %}
+
+</section>
+
+{% endblock %}

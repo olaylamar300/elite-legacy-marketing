@@ -8,6 +8,11 @@
         <p class="muted">{{ current_user['email'] }}</p>
     </div>
     <a class="button" href="{{ url_for('generate') }}">Generate ideas</a>
+    <div class="dashboard-actions" style="margin-top:20px;">
+    <a class="button" href="{{ url_for('content_calendar') }}">
+        📅 Generate 30-Day Content Calendar
+    </a>
+</div>
 </div>
 
 <div class="grid three">

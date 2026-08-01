@@ -52,16 +52,124 @@
     <div class="grid two">
         {% for idea in generated %}
         <article class="card idea-card">
-            <span class="pill">{{ idea.platform }}</span>
-            <h3>{{ idea.title }}</h3>
-            <p><strong>Format:</strong> {{ idea.format }}</p>
-            <p><strong>Audience:</strong> {{ idea.audience }}</p>
-            <p><strong>Tone:</strong> {{ idea.tone }}</p>
-            <p><strong>Platform tip:</strong> {{ idea.platform_tip }}</p>
-            <p><strong>CTA:</strong> {{ idea.cta }}</p>
-        </article>
+
+    <span class="pill">{{ idea.platform }}</span>
+
+    <h3>{{ idea.title }}</h3>
+
+    <hr>
+
+    <div class="content-section">
+    <div class="content-section-heading">
+        <h4>🎣 Hook</h4>
+        <button
+            type="button"
+            class="copy-btn"
+            onclick="copyContent(this)"
+        >
+            Copy
+        </button>
+    </div>
+
+    <p class="copy-content">
+        {{ idea.platform_tip.split('\n')[0].replace('Hook: ', '') }}
+    </p>
+</div>
+
+    <div class="content-section">
+    <div class="content-section-heading">
+        <h4>🎬 Script</h4>
+        <button
+            type="button"
+            class="copy-btn"
+            onclick="copyContent(this)"
+        >
+            Copy
+        </button>
+    </div>
+
+    <p class="copy-content">
+        {{ idea.format.split('Caption:')[0] }}
+    </p>
+</div>
+
+    <div class="content-section">
+    <div class="content-section-heading">
+        <h4>📝 Caption</h4>
+        <button
+            type="button"
+            class="copy-btn"
+            onclick="copyContent(this)"
+        >
+            Copy
+        </button>
+    </div>
+
+    <p class="copy-content">
+        {{ idea.format.split('Caption:')[1] }}
+    </p>
+</div>
+
+    <div class="content-section">
+    <div class="content-section-heading">
+        <h4>#️⃣ Hashtags</h4>
+        <button
+            type="button"
+            class="copy-btn"
+            onclick="copyContent(this)"
+        >
+            Copy
+        </button>
+    </div>
+
+    <p class="copy-content">
+        {{ idea.platform_tip.split('Hashtags:')[1] }}
+    </p>
+</div>
+
+    <div class="content-section">
+    <div class="content-section-heading">
+        <h4>📢 Call To Action</h4>
+        <button
+            type="button"
+            class="copy-btn"
+            onclick="copyContent(this)"
+        >
+            Copy
+        </button>
+    </div>
+
+    <p class="copy-content">
+        {{ idea.cta }}
+    </p>
+</div>
+
+</article>
         {% endfor %}
     </div>
 </section>
 {% endif %}
-{% endblock %}
+<script>
+async function copyContent(button) {
+    const section = button.closest(".content-section");
+    const content = section.querySelector(".copy-content");
+    const text = content.innerText.trim();
+
+    try {
+        await navigator.clipboard.writeText(text);
+
+        const originalText = button.innerText;
+        button.innerText = "Copied ✓";
+        button.classList.add("copied");
+
+        setTimeout(() => {
+            button.innerText = originalText;
+            button.classList.remove("copied");
+        }, 1500);
+    } catch (error) {
+        console.error("Copy failed:", error);
+        button.innerText = "Copy failed";
+    }
+}
+</script>
+{% endblock %} 

@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import stripe
 from dotenv import load_dotenv
 from openai import OpenAI
 import random
@@ -15,6 +16,8 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 client = OpenAI()
 
 app = Flask(__name__)
@@ -303,14 +306,17 @@ The ideas must be:
 
 Return ONLY in this exact format:
 
-CONTENT TITLE ||| CONTENT FORMAT
+TITLE ||| HOOK ||| SCRIPT ||| CAPTION ||| HASHTAGS ||| CTA
 
 Example:
 
-How I gained my first 10,000 followers ||| TikTok Storytelling Video
+How I gained my first 10,000 followers ||| Stop scrolling if you want more followers... ||| Start the video by showing your profile and explain the strategy you used. ||| Here's exactly how I grew from 0 to 10k followers. ||| #marketing #business #contentcreator ||| Follow for more marketing tips.
 
-Do not number the ideas.
-Do not add explanations.
+Return ONLY one line for each idea.
+Separate every section using |||
+Each idea must include TITLE, HOOK, SCRIPT, CAPTION, HASHTAGS and CTA.
+Do not number anything.
+Do not explain.
 Return exactly {number} lines.
 """
 
@@ -324,16 +330,22 @@ Return exactly {number} lines.
     for line in response.output_text.splitlines():
         line = line.strip()
 
-        if "|||" not in line:
+        parts = [part.strip() for part in line.split("|||")]
+
+        if len(parts) != 6:
             continue
 
-        title, content_format = line.split("|||", 1)
+        title, hook, script, caption, hashtags, cta = parts
 
-        title = title.strip()
-        content_format = content_format.strip()
-
-        if title and content_format:
-            ideas.append((title, content_format))
+        if all(parts):
+            ideas.append({
+                "title": title,
+                "hook": hook,
+                "script": script,
+                "caption": caption,
+                "hashtags": hashtags,
+                "cta": cta,
+            })
 
     if len(ideas) < number:
         raise ValueError("The AI did not return enough correctly formatted ideas.")
@@ -509,9 +521,16 @@ def generate():
 
         db = get_db()
 
-        for hook, content_format in pairs:
-            cta = random.choice(CTAS.get(goal, ["Follow for more."]))
-            platform_tip = PLATFORM_TIPS.get(platform, "Keep the content clear and focused.")
+        for idea in pairs:
+            title = idea["title"]
+            hook_text = idea["hook"]
+            script = idea["script"]
+            caption = idea["caption"]
+            hashtags = idea["hashtags"]
+            cta = idea["cta"]
+
+            content_format = f"{script}\n\nCaption: {caption}"
+            platform_tip = f"Hook: {hook_text}\nHashtags: {hashtags}"
 
             cursor = db.execute(
                 """
@@ -522,7 +541,7 @@ def generate():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    user["id"], hook, niche, platform, topic, audience,
+                    user["id"], title, niche, platform, topic, audience,
                     goal, tone, content_format, platform_tip, cta,
                     datetime.utcnow().isoformat(),
                 ),
@@ -530,7 +549,7 @@ def generate():
 
             generated.append({
                 "id": cursor.lastrowid,
-                "title": hook,
+                "title": title,
                 "format": content_format,
                 "platform": platform,
                 "audience": audience,
@@ -553,7 +572,163 @@ def generate():
         goals=GOALS,
         tones=TONES,
     )
+@app.route("/calendar", methods=["GET", "POST"])
+@login_required
+def content_calendar():
+    user = current_user()
+    calendar_ideas = []
 
+    if request.method == "POST":
+        niche = request.form.get("niche", "").strip()
+        platform = request.form.get("platform", "").strip()
+        topic = request.form.get("topic", "").strip()
+        audience = request.form.get("audience", "").strip()
+        goal = request.form.get("goal", "").strip()
+        tone = request.form.get("tone", "").strip()
+
+        if not all([niche, platform, topic, audience, goal, tone]):
+            flash("Please complete every calendar field.", "danger")
+            return redirect(url_for("content_calendar"))
+
+        # Keep the 30-day generator as a paid feature.
+        if user["plan"] != "pro":
+            flash(
+                "The 30-day content calendar is available on the Pro plan.",
+                "warning"
+            )
+            return redirect(url_for("pricing"))
+
+        try:
+            calendar_ideas = generate_ai_ideas(
+                niche=niche,
+                platform=platform,
+                topic=topic,
+                audience=audience,
+                goal=goal,
+                tone=tone,
+                number=30
+            )
+        except Exception as error:
+            print(f"Calendar generation failed: {error}")
+            flash(
+                "The AI could not generate your calendar. Please try again.",
+                "danger"
+            )
+            return redirect(url_for("content_calendar"))
+
+        db = get_db()
+        saved_ideas = []
+
+        for day_number, idea in enumerate(calendar_ideas, start=1):
+            title = idea["title"]
+            hook_text = idea["hook"]
+            script = idea["script"]
+            caption = idea["caption"]
+            hashtags = idea["hashtags"]
+            cta = idea["cta"]
+
+            content_format = f"{script}\n\nCaption: {caption}"
+            platform_tip = (
+                f"Day: {day_number}\n"
+                f"Hook: {hook_text}\n"
+                f"Hashtags: {hashtags}"
+            )
+
+            cursor = db.execute(
+                """
+                INSERT INTO ideas (
+                    user_id, title, niche, platform, topic, audience,
+                    goal, tone, format, platform_tip, cta, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user["id"],
+                    title,
+                    niche,
+                    platform,
+                    topic,
+                    audience,
+                    goal,
+                    tone,
+                    content_format,
+                    platform_tip,
+                    cta,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+
+            saved_ideas.append({
+                "id": cursor.lastrowid,
+                "day": day_number,
+                "title": title,
+                "platform": platform,
+                "audience": audience,
+                "goal": goal,
+                "cta": cta,
+            })
+
+        db.commit()
+        db.close()
+
+        flash("Your 30-day AI content calendar is ready.", "success")
+
+        return render_template(
+            "content_calendar.html",
+            ideas=saved_ideas
+        )
+
+    return render_template(
+        "content_calendar.html",
+        ideas=[]
+    )
+@app.route("/create-checkout-session", methods=["POST"])
+@login_required
+def create_checkout_session():
+    user = current_user()
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[
+                {
+                    "price": STRIPE_PRICE_ID,
+                    "quantity": 1,
+                }
+            ],
+            customer_email=user["email"],
+            success_url=url_for(
+                "checkout_success",
+                _external=True,
+            ) + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=url_for(
+                "pricing",
+                _external=True,
+            ),
+            metadata={
+                "user_id": str(user["id"]),
+            },
+        )
+
+        return redirect(checkout_session.url, code=303)
+
+    except Exception as error:
+        print(f"Stripe Checkout error: {error}")
+        flash(
+            "Stripe Checkout could not be opened. Please try again.",
+            "danger",
+        )
+        return redirect(url_for("pricing"))
+
+
+@app.route("/checkout-success")
+@login_required
+def checkout_success():
+    flash(
+        "Payment completed. Your Pro access is being activated.",
+        "success",
+    )
+    return redirect(url_for("dashboard"))
 
 @app.route("/library")
 @login_required

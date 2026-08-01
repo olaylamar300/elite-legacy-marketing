@@ -3,8 +3,8 @@
 {% block content %}
 <section class="pricing-heading">
     <span class="badge">Simple pricing</span>
-    <h1>Turn content planning into a subscription product.</h1>
-    <p class="lead">The pricing below can be changed before launch.</p>
+    <h1>Choose the plan that's right for your business.</h1>
+    <p class="lead">Start free and upgrade whenever you're ready to unlock unlimited AI-powered marketing tools.</p>
 </section>
 
 <div class="grid two pricing-grid">
@@ -13,26 +13,37 @@
         <h2>£0</h2>
         <p>For people testing the platform.</p>
         <ul>
-            <li>10 ideas per day</li>
-            <li>Saved content library</li>
-            <li>TXT and CSV exports</li>
+            <li>✓ 3 AI ideas per week</li>
+<li>✓ Save ideas to your library</li>
+<li>✓ Basic dashboard</li>
+<li>✗ 30-Day AI Content Calendar</li>
+<li>✗ AI Rewrite</li>
+<li>✗ Export ideas</li>
         </ul>
         <a class="button ghost full" href="{{ url_for('register') }}">Start free</a>
     </article>
 
     <article class="price-card featured">
-        <span class="pill">PRO</span>
-        <h2>£9.99<span>/month</span></h2>
+        <span class="popular">⭐ MOST POPULAR</span>
+        <h3 class="plan-name">Pro Creator</h3>
+        <h2>£11.99<span>/month</span></h2>
         <p>For creators and small businesses.</p>
         <ul>
-            <li>Unlimited idea generation</li>
-            <li>Saved content library</li>
-            <li>TXT and CSV exports</li>
-            <li>Priority access to new features</li>
+            <li>✓ Unlimited AI ideas</li>
+<ul>
+    <li>✅ Unlimited AI content ideas</li>
+    <li>✅ 30-Day AI Content Calendar</li>
+    <li>✅ Complete video scripts</li>
+    <li>✅ Captions & hashtags</li>
+    <li>✅ One-click copy buttons</li>
+    <li>✅ Unlimited saved ideas</li>
+    <li>✅ TXT & CSV export</li>
+    <li>✅ Priority updates</li>
+</ul>
         </ul>
         {% if current_user %}
-        <form method="post" action="{{ url_for('upgrade_demo') }}">
-            <button class="button full" type="submit">Upgrade to Pro</button>
+        <form method="post" action="{{ url_for('create_checkout_session') }}">
+            <button class="button full" type="submit">Unlock Pro</button>
         </form>
         {% else %}
         <a class="button full" href="{{ url_for('register') }}">Create account</a>
@@ -40,8 +51,6 @@
     </article>
 </div>
 
-<div class="notice">
-    <strong>Owner note:</strong> payment processing is intentionally not connected.
-    Connect Stripe, Lemon Squeezy, or another provider before accepting payments.
+<div class="notice"
 </div>
 {% endblock %}

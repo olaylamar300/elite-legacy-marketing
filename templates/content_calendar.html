@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}30-Day Content Calendar – Elite Legacy Marketing{% endblock %}
+
+{% block content %}
+
+<div class="page-heading">
+    <div>
+        <span class="badge">AI PLANNING</span>
+        <h1>30-Day Content Calendar</h1>
+        <p class="muted">
+            Generate a complete month of content for your brand.
+        </p>
+    </div>
+</div>
+
+<section class="section">
+
+    <form method="POST" class="generator-form">
+
+        <div class="form-grid">
+
+            <label>
+                Business niche
+                <input
+                    type="text"
+                    name="niche"
+                    placeholder="Example: Luxury events"
+                    required
+                >
+            </label>
+
+            <label>
+                Platform
+                <select name="platform" required>
+                    <option value="">Choose a platform</option>
+                    <option value="TikTok">TikTok</option>
+                    <option value="Instagram">Instagram</option>
+                    <option value="YouTube">YouTube</option>
+                    <option value="LinkedIn">LinkedIn</option>
+                    <option value="Facebook">Facebook</option>
+                </select>
+            </label>
+
+            <label>
+                Main topic
+                <input
+                    type="text"
+                    name="topic"
+                    placeholder="Example: Student nightlife events"
+                    required
+                >
+            </label>
+
+            <label>
+                Target audience
+                <input
+                    type="text"
+                    name="audience"
+                    placeholder="Example: UK students aged 18–24"
+                    required
+                >
+            </label>
+
+            <label>
+                Marketing goal
+                <select name="goal" required>
+                    <option value="">Choose a goal</option>
+                    <option value="Grow followers">Grow followers</option>
+                    <option value="Increase engagement">Increase engagement</option>
+                    <option value="Generate leads">Generate leads</option>
+                    <option value="Increase sales">Increase sales</option>
+                    <option value="Promote an event">Promote an event</option>
+                </select>
+            </label>
+
+            <label>
+                Brand tone
+                <select name="tone" required>
+                    <option value="">Choose a tone</option>
+                    <option value="Luxury">Luxury</option>
+                    <option value="Professional">Professional</option>
+                    <option value="Entertaining">Entertaining</option>
+                    <option value="Educational">Educational</option>
+                    <option value="Bold">Bold</option>
+                    <option value="Friendly">Friendly</option>
+                </select>
+            </label>
+
+        </div>
+
+        <button type="submit" class="button">
+            Generate 30 Days
+        </button>
+
+    </form>
+
+</section>
+
+{% if ideas %}
+
+<section class="section">
+
+    <div class="section-title">
+        <div>
+            <span class="badge">CALENDAR READY</span>
+            <h2>Your 30-day plan</h2>
+        </div>
+    </div>
+
+    <div class="calendar-grid">
+
+        {% for idea in ideas %}
+
+        <article class="calendar-card">
+
+            <div class="calendar-day">
+                Day {{ idea.day }}
+            </div>
+
+            <span class="pill">{{ idea.platform }}</span>
+
+            <h3>{{ idea.title }}</h3>
+
+            <p>
+                <strong>Audience:</strong>
+                {{ idea.audience }}
+            </p>
+
+            <p>
+                <strong>Goal:</strong>
+                {{ idea.goal }}
+            </p>
+
+            <p>
+                <strong>CTA:</strong>
+                {{ idea.cta }}
+            </p>
+
+            <a
+                class="button small ghost"
+                href="{{ url_for('library') }}"
+            >
+                View full content pack
+            </a>
+
+        </article>
+
+        {% endfor %}
+
+    </div>
+
+</section>
+
+{% endif %}
+
+{% endblock %}
