@@ -23,7 +23,10 @@ client = OpenAI()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY")
-DATABASE = os.path.join(os.path.dirname(__file__), "ideaforge.db")
+DATABASE = os.environ.get(
+    "DATABASE_PATH",
+    os.path.join(os.path.dirname(__file__), "ideaforge.db"),
+)
 
 FREE_DAILY_LIMIT = 10
 
