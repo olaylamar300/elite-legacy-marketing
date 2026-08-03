@@ -18,6 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 load_dotenv()
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 client = OpenAI()
 
 app = Flask(__name__)
@@ -724,11 +725,73 @@ def create_checkout_session():
 @app.route("/checkout-success")
 @login_required
 def checkout_success():
-    flash(
-        "Payment completed. Your Pro access is being activated.",
-        "success",
-    )
+    session_id = request.args.get("session_id")
+
+    if not session_id:
+        flash("Stripe session could not be found.", "danger")
+        return redirect(url_for("pricing"))
+
+    try:
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+
+        if checkout_session.payment_status == "paid":
+            db = get_db()
+
+            db.execute(
+                "UPDATE users SET plan='pro' WHERE id=?",
+                (session["user_id"],)
+            )
+
+            db.commit()
+            db.close()
+
+            
+
+            flash(
+                "Payment completed. Your Pro account is now active!",
+                "success",
+            )
+
+    except Exception as e:
+        print(e)
+        flash("Unable to activate Pro.", "danger")
+
     return redirect(url_for("dashboard"))
+
+@app.route("/stripe-webhook", methods=["POST"])
+def stripe_webhook():
+    payload = request.get_data()
+    signature = request.headers.get("Stripe-Signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload,
+            signature,
+            STRIPE_WEBHOOK_SECRET,
+        )
+    except ValueError:
+        return "Invalid payload", 400
+    except stripe.error.SignatureVerificationError:
+        return "Invalid signature", 400
+
+    if event["type"] == "checkout.session.completed":
+        checkout_session = event["data"]["object"]
+
+        user_id = checkout_session.get("metadata", {}).get("user_id")
+
+        if user_id:
+            db = get_db()
+            db.execute(
+                "UPDATE users SET plan = ? WHERE id = ?",
+                ("pro", int(user_id)),
+            )
+            db.commit()
+            db.close()
+
+            print(f"User {user_id} upgraded to Pro")
+
+    return "", 200
+
 
 @app.route("/library")
 @login_required
