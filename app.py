@@ -778,7 +778,7 @@ def stripe_webhook():
         return "Invalid signature", 400
 
     if event["type"] == "checkout.session.completed":
-        checkout_session = event["data"]["object"]
+        checkout_session = event["data"]["object"].to_dict()
 
         user_id = checkout_session.get("metadata", {}).get("user_id")
 
