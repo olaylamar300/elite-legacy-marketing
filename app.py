@@ -19,7 +19,7 @@ load_dotenv()
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
-client = OpenAI()
+client = None
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY")
@@ -192,7 +192,37 @@ def init_db():
             UNIQUE(user_id, usage_date),
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS stripe_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            processed_at TEXT NOT NULL
+        );
         """
+    )
+
+    # Keep existing Railway databases compatible without deleting customer data.
+    user_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()
+    }
+    migrations = {
+        "stripe_customer_id": "TEXT",
+        "stripe_subscription_id": "TEXT",
+        "subscription_status": "TEXT NOT NULL DEFAULT 'none'",
+        "subscription_period_end": "TEXT",
+    }
+    for column, definition in migrations.items():
+        if column not in user_columns:
+            db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_customer_idx "
+        "ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_subscription_idx "
+        "ON users(stripe_subscription_id) "
+        "WHERE stripe_subscription_id IS NOT NULL"
     )
     db.commit()
     db.close()
@@ -218,11 +248,108 @@ def current_user():
         return None
     db = get_db()
     user = db.execute(
-        "SELECT id, email, plan, created_at FROM users WHERE id = ?",
+        "SELECT id, email, plan, created_at, stripe_customer_id, "
+        "stripe_subscription_id, subscription_status, "
+        "subscription_period_end FROM users WHERE id = ?",
         (session["user_id"],),
     ).fetchone()
     db.close()
     return user
+
+
+def stripe_value(value):
+    """Return a plain value from Stripe objects or dictionaries."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "to_dict_recursive"):
+        return value.to_dict_recursive()
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    return value
+
+
+def subscription_id_from_invoice(invoice):
+    subscription = invoice.get("subscription")
+    if isinstance(subscription, dict):
+        return subscription.get("id")
+    if subscription:
+        return subscription
+
+    parent = invoice.get("parent") or {}
+    details = parent.get("subscription_details") or {}
+    subscription = details.get("subscription")
+    return subscription.get("id") if isinstance(subscription, dict) else subscription
+
+
+def update_subscription_user(
+    db,
+    *,
+    user_id=None,
+    customer_id=None,
+    subscription_id=None,
+    status=None,
+    period_end=None,
+    plan=None,
+):
+    conditions = []
+    values = []
+    if user_id:
+        conditions.append("id = ?")
+        values.append(int(user_id))
+    elif subscription_id:
+        conditions.append("stripe_subscription_id = ?")
+        values.append(subscription_id)
+    elif customer_id:
+        conditions.append("stripe_customer_id = ?")
+        values.append(customer_id)
+    if not conditions:
+        return 0
+
+    updates = []
+    update_values = []
+    for column, value in (
+        ("stripe_customer_id", customer_id),
+        ("stripe_subscription_id", subscription_id),
+        ("subscription_status", status),
+        ("subscription_period_end", period_end),
+        ("plan", plan),
+    ):
+        if value is not None:
+            updates.append(f"{column} = ?")
+            update_values.append(value)
+
+    if not updates:
+        return 0
+
+    result = db.execute(
+        f"UPDATE users SET {', '.join(updates)} "
+        f"WHERE {' OR '.join(conditions)}",
+        (*update_values, *values),
+    )
+    return result.rowcount
+
+
+def sync_subscription(db, subscription, user_id=None):
+    subscription = stripe_value(subscription)
+    status = subscription.get("status", "none")
+    plan = "pro" if status in {"active", "trialing"} else "free"
+    period_end = subscription.get("current_period_end")
+    period_end = (
+        datetime.utcfromtimestamp(period_end).isoformat()
+        if period_end else None
+    )
+    metadata = subscription.get("metadata") or {}
+    return update_subscription_user(
+        db,
+        user_id=user_id or metadata.get("user_id"),
+        customer_id=subscription.get("customer"),
+        subscription_id=subscription.get("id"),
+        status=status,
+        period_end=period_end,
+        plan=plan,
+    )
 
 
 def get_today_usage(user_id):
@@ -323,6 +450,10 @@ Do not number anything.
 Do not explain.
 Return exactly {number} lines.
 """
+
+    global client
+    if client is None:
+        client = OpenAI()
 
     response = client.responses.create(
         model="gpt-5-mini",
@@ -691,8 +822,16 @@ def content_calendar():
 def create_checkout_session():
     user = current_user()
 
+    if not stripe.api_key or not STRIPE_PRICE_ID:
+        app.logger.error("Stripe secret key or price ID is missing")
+        flash("Payments are temporarily unavailable. Please try again later.", "danger")
+        return redirect(url_for("pricing"))
+
+    if user["plan"] == "pro" and user["stripe_customer_id"]:
+        return redirect(url_for("create_billing_portal"))
+
     try:
-        checkout_session = stripe.checkout.Session.create(
+        checkout_options = dict(
             mode="subscription",
             line_items=[
                 {
@@ -700,7 +839,6 @@ def create_checkout_session():
                     "quantity": 1,
                 }
             ],
-            customer_email=user["email"],
             success_url=url_for(
                 "checkout_success",
                 _external=True,
@@ -712,12 +850,23 @@ def create_checkout_session():
             metadata={
                 "user_id": str(user["id"]),
             },
+            subscription_data={
+                "metadata": {"user_id": str(user["id"])},
+            },
+            allow_promotion_codes=True,
         )
+
+        if user["stripe_customer_id"]:
+            checkout_options["customer"] = user["stripe_customer_id"]
+        else:
+            checkout_options["customer_email"] = user["email"]
+
+        checkout_session = stripe.checkout.Session.create(**checkout_options)
 
         return redirect(checkout_session.url, code=303)
 
     except Exception as error:
-        print(f"Stripe Checkout error: {error}")
+        app.logger.exception("Stripe Checkout failed: %s", error)
         flash(
             "Stripe Checkout could not be opened. Please try again.",
             "danger",
@@ -735,29 +884,38 @@ def checkout_success():
         return redirect(url_for("pricing"))
 
     try:
-        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        checkout_session = stripe_value(
+            stripe.checkout.Session.retrieve(session_id)
+        )
+        checkout_user_id = (checkout_session.get("metadata") or {}).get("user_id")
 
-        if checkout_session.payment_status == "paid":
+        if checkout_user_id != str(session["user_id"]):
+            app.logger.warning("Checkout session did not belong to logged-in user")
+            flash("That payment session could not be verified.", "danger")
+            return redirect(url_for("pricing"))
+
+        if checkout_session.get("payment_status") == "paid":
             db = get_db()
-
-            db.execute(
-                "UPDATE users SET plan='pro' WHERE id=?",
-                (session["user_id"],)
-            )
-
+            subscription_id = checkout_session.get("subscription")
+            if isinstance(subscription_id, dict):
+                subscription_id = subscription_id.get("id")
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            sync_subscription(db, subscription, user_id=session["user_id"])
             db.commit()
             db.close()
-
-            
-
             flash(
                 "Payment completed. Your Pro account is now active!",
                 "success",
             )
+        else:
+            flash("Your payment is still processing.", "warning")
 
-    except Exception as e:
-        print(e)
-        flash("Unable to activate Pro.", "danger")
+    except Exception as error:
+        app.logger.exception("Unable to verify Checkout session: %s", error)
+        flash(
+            "Payment received. Your account will update automatically shortly.",
+            "warning",
+        )
 
     return redirect(url_for("dashboard"))
 
@@ -765,6 +923,10 @@ def checkout_success():
 def stripe_webhook():
     payload = request.get_data()
     signature = request.headers.get("Stripe-Signature")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        app.logger.error("STRIPE_WEBHOOK_SECRET is missing")
+        return "Webhook is not configured", 503
 
     try:
         event = stripe.Webhook.construct_event(
@@ -774,26 +936,96 @@ def stripe_webhook():
         )
     except ValueError:
         return "Invalid payload", 400
-    except stripe.error.SignatureVerificationError:
+    except stripe.SignatureVerificationError:
         return "Invalid signature", 400
 
-    if event["type"] == "checkout.session.completed":
-        checkout_session = event["data"]["object"].to_dict()
+    event = stripe_value(event)
+    event_id = event.get("id")
+    event_type = event.get("type")
+    stripe_object = stripe_value(event["data"]["object"])
+    db = get_db()
 
-        user_id = checkout_session.get("metadata", {}).get("user_id")
+    if db.execute(
+        "SELECT 1 FROM stripe_events WHERE event_id = ?", (event_id,)
+    ).fetchone():
+        db.close()
+        return "", 200
 
-        if user_id:
-            db = get_db()
-            db.execute(
-                "UPDATE users SET plan = ? WHERE id = ?",
-                ("pro", int(user_id)),
+    try:
+        if event_type == "checkout.session.completed":
+            user_id = (stripe_object.get("metadata") or {}).get("user_id")
+            if stripe_object.get("payment_status") == "paid" and user_id:
+                update_subscription_user(
+                    db,
+                    user_id=user_id,
+                    customer_id=stripe_object.get("customer"),
+                    subscription_id=stripe_object.get("subscription"),
+                    status="active",
+                    plan="pro",
+                )
+
+        elif event_type in {
+            "customer.subscription.created",
+            "customer.subscription.updated",
+            "customer.subscription.deleted",
+        }:
+            sync_subscription(db, stripe_object)
+
+        elif event_type == "invoice.paid":
+            subscription_id = subscription_id_from_invoice(stripe_object)
+            if subscription_id:
+                update_subscription_user(
+                    db,
+                    customer_id=stripe_object.get("customer"),
+                    subscription_id=subscription_id,
+                    status="active",
+                    plan="pro",
+                )
+
+        elif event_type == "invoice.payment_failed":
+            # Stripe may retry a failed renewal, so record the state while
+            # subscription.updated decides when access should be removed.
+            update_subscription_user(
+                db,
+                customer_id=stripe_object.get("customer"),
+                subscription_id=subscription_id_from_invoice(stripe_object),
+                status="past_due",
             )
-            db.commit()
-            db.close()
 
-            print(f"User {user_id} upgraded to Pro")
+        db.execute(
+            "INSERT INTO stripe_events (event_id, event_type, processed_at) "
+            "VALUES (?, ?, ?)",
+            (event_id, event_type, datetime.utcnow().isoformat()),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        app.logger.exception("Failed to process Stripe event %s", event_id)
+        return "Webhook processing failed", 500
+    finally:
+        db.close()
 
     return "", 200
+
+
+@app.route("/billing-portal", methods=["POST", "GET"])
+@login_required
+def create_billing_portal():
+    user = current_user()
+    if not user["stripe_customer_id"]:
+        flash("No Stripe subscription was found for this account.", "warning")
+        return redirect(url_for("pricing"))
+
+    try:
+        portal_session = stripe.billing_portal.Session.create(
+            customer=user["stripe_customer_id"],
+            return_url=url_for("dashboard", _external=True),
+        )
+        return redirect(portal_session.url, code=303)
+    except Exception as error:
+        app.logger.exception("Stripe billing portal failed: %s", error)
+        flash("Billing management is temporarily unavailable.", "danger")
+        return redirect(url_for("dashboard"))
 
 
 @app.route("/library")

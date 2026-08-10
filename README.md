@@ -15,13 +15,43 @@ IdeaForge is a working Flask web application that can be sold as a subscription 
 - CSV exports
 - Mobile-friendly dark interface
 - SQLite database
-- Owner commands for upgrading accounts
+- Stripe Checkout subscriptions
+- Automatic Pro activation and renewal handling
+- Stripe Customer Portal for billing and cancellations
 
-## Important limitation
+## AI generation
 
-The generator uses a large library of templates and combinations. It does not use an external AI API. This keeps operating costs low and makes the first version easier to launch.
+The generator uses the OpenAI API and falls back to a local template library when AI generation is temporarily unavailable.
 
-The payment button is a demonstration only. Do not accept real payments until a secure payment provider is connected.
+## Stripe and Railway configuration
+
+Set these variables in the Railway service before accepting payments:
+
+```text
+SECRET_KEY=<a long random value>
+OPENAI_API_KEY=<your OpenAI API key>
+STRIPE_SECRET_KEY=<your Stripe test or live secret key>
+STRIPE_PRICE_ID=<the recurring monthly Price ID>
+STRIPE_WEBHOOK_SECRET=<the signing secret for this endpoint>
+DATABASE_PATH=/data/ideaforge.db
+```
+
+Create the Stripe webhook endpoint using the deployed site URL:
+
+```text
+https://<your-domain>/stripe-webhook
+```
+
+Subscribe that endpoint to:
+
+- `checkout.session.completed`
+- `invoice.paid`
+- `invoice.payment_failed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+
+Use keys, products, prices and webhook secrets from the same Stripe mode. Test-mode and live-mode values cannot be mixed. Configure Stripe's Customer Portal so Pro customers can update their payment method, view invoices and cancel their subscription.
 
 ## Run on a MacBook
 
@@ -107,14 +137,14 @@ flask --app app make-free
 ## Suggested first pricing
 
 - Free: 10 ideas per day
-- Pro: £9.99 per month
+- Pro: £11.99 per month
 - Agency: £24.99 per month after adding multiple brands and team access
 
 ## What to change before selling
 
 1. Replace the name IdeaForge with your final brand.
 2. Add your logo, terms, privacy policy, support email, and refund policy.
-3. Connect a payment provider.
+3. Test Stripe Checkout, renewals, failed payments and cancellations in test mode.
 4. Deploy the app to a hosting platform.
 5. Turn off Flask debug mode in production.
 6. Use PostgreSQL instead of SQLite once you have active customers.

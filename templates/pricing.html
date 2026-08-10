@@ -41,7 +41,11 @@
     <li>✅ Priority updates</li>
 </ul>
         </ul>
-        {% if current_user %}
+        {% if current_user and current_user['plan'] == 'pro' %}
+        <form method="post" action="{{ url_for('create_billing_portal') }}">
+            <button class="button full" type="submit">Manage subscription</button>
+        </form>
+        {% elif current_user %}
         <form method="post" action="{{ url_for('create_checkout_session') }}">
             <button class="button full" type="submit">Unlock Pro</button>
         </form>

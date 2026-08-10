@@ -8,6 +8,11 @@
         <p class="muted">{{ current_user['email'] }}</p>
     </div>
     <a class="button" href="{{ url_for('generate') }}">Generate ideas</a>
+    {% if current_user['stripe_customer_id'] %}
+    <form method="post" action="{{ url_for('create_billing_portal') }}">
+        <button class="button ghost" type="submit">Manage billing</button>
+    </form>
+    {% endif %}
     <div class="dashboard-actions" style="margin-top:20px;">
     <a class="button" href="{{ url_for('content_calendar') }}">
         📅 Generate 30-Day Content Calendar
