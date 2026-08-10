@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Pricing — IdeaForge{% endblock %}
+{% block title %}Pricing — Elite Legacy Marketing{% endblock %}
 {% block content %}
 <section class="pricing-heading">
     <span class="badge">Simple pricing</span>
@@ -13,9 +13,9 @@
         <h2>£0</h2>
         <p>For people testing the platform.</p>
         <ul>
-            <li>✓ 3 AI ideas per week</li>
+            <li>✓ 10 AI ideas per day</li>
 <li>✓ Save ideas to your library</li>
-<li>✓ Basic dashboard</li>
+            <li>✓ One brand workspace</li>
 <li>✗ 30-Day AI Content Calendar</li>
 <li>✗ AI Rewrite</li>
 <li>✗ Export ideas</li>
@@ -29,17 +29,16 @@
         <h2>£11.99<span>/month</span></h2>
         <p>For creators and small businesses.</p>
         <ul>
-            <li>✓ Unlimited AI ideas</li>
-<ul>
     <li>✅ Unlimited AI content ideas</li>
     <li>✅ 30-Day AI Content Calendar</li>
     <li>✅ Complete video scripts</li>
     <li>✅ Captions & hashtags</li>
+    <li>✅ AI Rewrite & Campaign Strategy</li>
+    <li>✅ Multiple client workspaces</li>
     <li>✅ One-click copy buttons</li>
     <li>✅ Unlimited saved ideas</li>
     <li>✅ TXT & CSV export</li>
     <li>✅ Priority updates</li>
-</ul>
         </ul>
         {% if current_user and current_user['plan'] == 'pro' %}
         <form method="post" action="{{ url_for('create_billing_portal') }}">
@@ -55,6 +54,4 @@
     </article>
 </div>
 
-<div class="notice"
-</div>
 {% endblock %}

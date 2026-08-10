@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — IdeaForge{% endblock %}
+{% block title %}Dashboard — Elite Legacy Marketing{% endblock %}
 {% block content %}
 <div class="page-heading">
     <div>
         <span class="badge">{{ current_user['plan']|upper }} PLAN</span>
         <h1>Your content dashboard</h1>
         <p class="muted">{{ current_user['email'] }}</p>
+        {% if current_brand %}<p class="workspace-label">Workspace: <strong>{{ current_brand['name'] }}</strong></p>{% endif %}
     </div>
     <a class="button" href="{{ url_for('generate') }}">Generate ideas</a>
     {% if current_user['stripe_customer_id'] %}
@@ -17,6 +18,19 @@
     <a class="button" href="{{ url_for('content_calendar') }}">
         📅 Generate 30-Day Content Calendar
     </a>
+</div>
+
+{% if email_enabled and not current_user['email_verified'] %}
+<div class="notice inline-notice">
+    <div><strong>Verify your email</strong><p class="muted">Verification protects your account and enables password recovery.</p></div>
+    <form method="post" action="{{ url_for('resend_verification') }}"><button class="button ghost small" type="submit">Resend email</button></form>
+</div>
+{% endif %}
+
+<div class="quick-tools grid three">
+    <a class="quick-card" href="{{ url_for('marketing_tools') }}"><span>✍️</span><strong>Rewrite content</strong><small>Turn drafts into polished posts</small></a>
+    <a class="quick-card" href="{{ url_for('marketing_tools') }}"><span>#️⃣</span><strong>Find hashtags</strong><small>Generate relevant discovery tags</small></a>
+    <a class="quick-card" href="{{ url_for('marketing_tools') }}"><span>📈</span><strong>Build a campaign</strong><small>Create a practical action plan</small></a>
 </div>
 </div>
 

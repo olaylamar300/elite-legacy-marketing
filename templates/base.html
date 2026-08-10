@@ -9,12 +9,17 @@
 <body>
 <nav class="nav">
 <a class="brand" href="{{ url_for('home') }}">Elite Legacy Marketing</a>
+    <button class="nav-toggle" type="button" aria-label="Open navigation" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
     <div class="nav-links">
         {% if current_user %}
             <a href="{{ url_for('dashboard') }}">Dashboard</a>
             <a href="{{ url_for('generate') }}">Generate</a>
+            <a href="{{ url_for('marketing_tools') }}">AI Tools</a>
             <a href="{{ url_for('library') }}">Library</a>
+            <a href="{{ url_for('brands') }}">Brands{% if current_brand %}: {{ current_brand['name'] }}{% endif %}</a>
             <a href="{{ url_for('pricing') }}">Pricing</a>
+            <a href="{{ url_for('account') }}">Account</a>
+            {% if is_admin %}<a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}
             <a class="button small ghost" href="{{ url_for('logout') }}">Log out</a>
         {% else %}
             <a href="{{ url_for('pricing') }}">Pricing</a>
@@ -35,6 +40,12 @@
 </main>
 
 <footer>
+    <div class="footer-links">
+        <a href="{{ url_for('terms') }}">Terms</a>
+        <a href="{{ url_for('privacy') }}">Privacy</a>
+        <a href="{{ url_for('refund_policy') }}">Refund policy</a>
+        <a href="{{ url_for('contact') }}">Contact</a>
+    </div>
     <p>Elite Legacy Marketing © 2026 · Powered by AI. Built for creators, agencies and businesses.</p>
 </footer>
 </body>

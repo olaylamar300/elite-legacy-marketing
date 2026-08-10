@@ -1,6 +1,6 @@
-# IdeaForge — Sellable Content Idea Generator MVP
+# Elite Legacy Marketing — AI Marketing Platform
 
-IdeaForge is a working Flask web application that can be sold as a subscription service or customised for clients.
+Elite Legacy Marketing is a Flask SaaS platform for creators, businesses, freelancers and marketing agencies.
 
 ## Included features
 
@@ -18,6 +18,12 @@ IdeaForge is a working Flask web application that can be sold as a subscription 
 - Stripe Checkout subscriptions
 - Automatic Pro activation and renewal handling
 - Stripe Customer Portal for billing and cancellations
+- Email verification and secure password reset
+- Account and subscription settings
+- Multiple brand/client workspaces
+- AI rewrite, hashtag and campaign strategy tools
+- Terms, privacy, refund and contact pages
+- Admin user, subscription and usage analytics
 
 ## AI generation
 
@@ -34,6 +40,14 @@ STRIPE_SECRET_KEY=<your Stripe test or live secret key>
 STRIPE_PRICE_ID=<the recurring monthly Price ID>
 STRIPE_WEBHOOK_SECRET=<the signing secret for this endpoint>
 DATABASE_PATH=/data/ideaforge.db
+PUBLIC_URL=https://wwwelite-legacy-marketing.com
+ADMIN_EMAIL=<the owner's registered account email>
+SUPPORT_EMAIL=<public support email>
+SMTP_HOST=<email provider SMTP host>
+SMTP_PORT=587
+SMTP_USERNAME=<email provider username>
+SMTP_PASSWORD=<email provider password>
+SMTP_FROM=<verified sender address>
 ```
 
 Create the Stripe webhook endpoint using the deployed site URL:
@@ -140,18 +154,15 @@ flask --app app make-free
 - Pro: £11.99 per month
 - Agency: £24.99 per month after adding multiple brands and team access
 
-## What to change before selling
+## Before selling
 
-1. Replace the name IdeaForge with your final brand.
-2. Add your logo, terms, privacy policy, support email, and refund policy.
+1. Review the legal pages with a qualified UK adviser before relying on them commercially.
+2. Configure a verified support email and SMTP delivery.
 3. Test Stripe Checkout, renewals, failed payments and cancellations in test mode.
-4. Deploy the app to a hosting platform.
-5. Turn off Flask debug mode in production.
-6. Use PostgreSQL instead of SQLite once you have active customers.
-7. Add email verification and password reset.
-8. Add analytics and error monitoring.
-9. Add an AI API later for more original, contextual ideas.
-10. Test the app on mobile and desktop.
+4. Add genuine customer testimonials only after receiving permission.
+5. Use PostgreSQL once concurrency or customer volume outgrows SQLite.
+6. Add error monitoring and automated database backups.
+7. Test the platform on mobile and desktop before each release.
 
 ## Product positioning
 
@@ -175,7 +186,7 @@ Potential customers:
 
 ### Option 1: Subscription website
 
-Host IdeaForge online and charge customers monthly.
+Host Elite Legacy Marketing online and charge customers monthly.
 
 ### Option 2: White-label client tool
 

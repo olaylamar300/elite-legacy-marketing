@@ -1,24 +1,27 @@
 import csv
 import io
 import os
+import smtplib
 import stripe
+from email.message import EmailMessage
 from dotenv import load_dotenv
 from openai import OpenAI
 import random
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import wraps
 
-from flask import (
-    Flask, flash, redirect, render_template, request,
-    send_file, session, url_for
-)
+from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://wwwelite-legacy-marketing.com").rstrip("/")
 client = None
 
 app = Flask(__name__)
@@ -198,6 +201,34 @@ def init_db():
             event_type TEXT NOT NULL,
             processed_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS brands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            niche TEXT NOT NULL DEFAULT '',
+            audience TEXT NOT NULL DEFAULT '',
+            voice TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_name TEXT NOT NULL,
+            metadata TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS contact_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
         """
     )
 
@@ -210,10 +241,18 @@ def init_db():
         "stripe_subscription_id": "TEXT",
         "subscription_status": "TEXT NOT NULL DEFAULT 'none'",
         "subscription_period_end": "TEXT",
+        "email_verified": "INTEGER NOT NULL DEFAULT 0",
+        "display_name": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in migrations.items():
         if column not in user_columns:
             db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+
+    idea_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(ideas)").fetchall()
+    }
+    if "brand_id" not in idea_columns:
+        db.execute("ALTER TABLE ideas ADD COLUMN brand_id INTEGER")
 
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_customer_idx "
@@ -250,11 +289,102 @@ def current_user():
     user = db.execute(
         "SELECT id, email, plan, created_at, stripe_customer_id, "
         "stripe_subscription_id, subscription_status, "
-        "subscription_period_end FROM users WHERE id = ?",
+        "subscription_period_end, email_verified, display_name "
+        "FROM users WHERE id = ?",
         (session["user_id"],),
     ).fetchone()
     db.close()
     return user
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def token_serializer():
+    return URLSafeTimedSerializer(app.secret_key, salt="elite-legacy-account")
+
+
+def account_token(email, purpose):
+    return token_serializer().dumps({"email": email, "purpose": purpose})
+
+
+def read_account_token(token, purpose, max_age=3600):
+    data = token_serializer().loads(token, max_age=max_age)
+    if data.get("purpose") != purpose:
+        raise BadSignature("Incorrect token purpose")
+    return data["email"]
+
+
+def send_account_email(recipient, subject, body):
+    host = os.environ.get("SMTP_HOST")
+    username = os.environ.get("SMTP_USERNAME")
+    password = os.environ.get("SMTP_PASSWORD")
+    sender = os.environ.get("SMTP_FROM", SUPPORT_EMAIL)
+    if not all([host, username, password, sender]):
+        app.logger.warning("Email not sent because SMTP variables are incomplete")
+        return False
+
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    with smtplib.SMTP(host, port, timeout=15) as smtp:
+        smtp.starttls()
+        smtp.login(username, password)
+        smtp.send_message(message)
+    return True
+
+
+def email_configured():
+    return all(
+        os.environ.get(name)
+        for name in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
+    )
+
+
+def log_event(event_name, user_id=None, metadata=""):
+    db = get_db()
+    db.execute(
+        "INSERT INTO analytics_events (user_id, event_name, metadata, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id or session.get("user_id"), event_name, str(metadata)[:500], utc_now()),
+    )
+    db.commit()
+    db.close()
+
+
+def current_brand():
+    if "user_id" not in session:
+        return None
+    db = get_db()
+    brand = None
+    if session.get("brand_id"):
+        brand = db.execute(
+            "SELECT * FROM brands WHERE id=? AND user_id=?",
+            (session["brand_id"], session["user_id"]),
+        ).fetchone()
+    if not brand:
+        brand = db.execute(
+            "SELECT * FROM brands WHERE user_id=? ORDER BY id LIMIT 1",
+            (session["user_id"],),
+        ).fetchone()
+        if brand:
+            session["brand_id"] = brand["id"]
+    db.close()
+    return brand
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user or not ADMIN_EMAIL or user["email"] != ADMIN_EMAIL:
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped
 
 
 def stripe_value(value):
@@ -390,7 +520,14 @@ def generate_unique_ideas(topic, number):
         combination = (hook, content_format)
         if combination not in used:
             used.add(combination)
-            ideas.append((hook, content_format))
+            ideas.append({
+                "title": hook,
+                "hook": hook,
+                "script": f"Create a {content_format.lower()} that clearly explains {topic}.",
+                "caption": f"A practical look at {topic}.",
+                "hashtags": "#contentmarketing #marketingtips #socialmedia",
+                "cta": "Follow for more practical marketing ideas.",
+            })
         attempts += 1
 
     return ideas
@@ -489,7 +626,15 @@ Return exactly {number} lines.
 
 @app.context_processor
 def inject_user():
-    return {"current_user": current_user()}
+    user = current_user()
+    return {
+        "current_user": user,
+        "current_brand": current_brand(),
+        "is_admin": bool(user and ADMIN_EMAIL and user["email"] == ADMIN_EMAIL),
+        "support_email": SUPPORT_EMAIL,
+        "support_contact": SUPPORT_EMAIL or "the contact form on this website",
+        "email_enabled": email_configured(),
+    }
 
 
 @app.route("/")
@@ -518,7 +663,7 @@ def register():
                 INSERT INTO users (email, password_hash, plan, created_at)
                 VALUES (?, ?, 'free', ?)
                 """,
-                (email, generate_password_hash(password), datetime.utcnow().isoformat()),
+                (email, generate_password_hash(password), utc_now()),
             )
             db.commit()
         except sqlite3.IntegrityError:
@@ -527,9 +672,25 @@ def register():
             return redirect(url_for("register"))
 
         user_id = cursor.lastrowid
+        db.execute(
+            "INSERT INTO brands (user_id, name, created_at) VALUES (?, ?, ?)",
+            (user_id, "My Brand", utc_now()),
+        )
+        db.commit()
         db.close()
         session.clear()
         session["user_id"] = user_id
+        log_event("registration", user_id)
+
+        verification_url = PUBLIC_URL + url_for(
+            "verify_email", token=account_token(email, "verify")
+        )
+        send_account_email(
+            email,
+            "Verify your Elite Legacy Marketing account",
+            f"Verify your email by opening this link:\n\n{verification_url}\n\n"
+            "This link expires in 24 hours.",
+        )
         flash("Your account has been created.", "success")
         return redirect(url_for("dashboard"))
 
@@ -555,6 +716,7 @@ def login():
 
         session.clear()
         session["user_id"] = user["id"]
+        log_event("login", user["id"])
         flash("Welcome back.", "success")
         return redirect(url_for("dashboard"))
 
@@ -572,22 +734,25 @@ def logout():
 @login_required
 def dashboard():
     user = current_user()
+    brand = current_brand()
     usage = get_today_usage(user["id"])
     remaining = None if user["plan"] == "pro" else max(FREE_DAILY_LIMIT - usage, 0)
 
     db = get_db()
+    brand_filter = brand["id"] if brand else None
     recent_ideas = db.execute(
         """
         SELECT * FROM ideas
-        WHERE user_id = ?
+        WHERE user_id = ? AND (? IS NULL OR brand_id = ? OR brand_id IS NULL)
         ORDER BY id DESC
         LIMIT 8
         """,
-        (user["id"],),
+        (user["id"], brand_filter, brand_filter),
     ).fetchall()
     total_ideas = db.execute(
-        "SELECT COUNT(*) AS total FROM ideas WHERE user_id = ?",
-        (user["id"],),
+        "SELECT COUNT(*) AS total FROM ideas WHERE user_id = ? "
+        "AND (? IS NULL OR brand_id = ? OR brand_id IS NULL)",
+        (user["id"], brand_filter, brand_filter),
     ).fetchone()["total"]
     db.close()
 
@@ -671,14 +836,14 @@ def generate():
                 """
                 INSERT INTO ideas (
                     user_id, title, niche, platform, topic, audience,
-                    goal, tone, format, platform_tip, cta, created_at
+                    goal, tone, format, platform_tip, cta, created_at, brand_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user["id"], title, niche, platform, topic, audience,
                     goal, tone, content_format, platform_tip, cta,
-                    datetime.utcnow().isoformat(),
+                    utc_now(), current_brand()["id"] if current_brand() else None,
                 ),
             )
 
@@ -697,6 +862,7 @@ def generate():
         db.commit()
         db.close()
         increase_usage(user["id"], len(generated))
+        log_event("ideas_generated", user["id"], len(generated))
         flash(f"{len(generated)} content ideas generated.", "success")
 
     return render_template(
@@ -773,9 +939,9 @@ def content_calendar():
                 """
                 INSERT INTO ideas (
                     user_id, title, niche, platform, topic, audience,
-                    goal, tone, format, platform_tip, cta, created_at
+                    goal, tone, format, platform_tip, cta, created_at, brand_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user["id"],
@@ -789,7 +955,8 @@ def content_calendar():
                     content_format,
                     platform_tip,
                     cta,
-                    datetime.utcnow().isoformat(),
+                    utc_now(),
+                    current_brand()["id"] if current_brand() else None,
                 ),
             )
 
@@ -995,7 +1162,7 @@ def stripe_webhook():
         db.execute(
             "INSERT INTO stripe_events (event_id, event_type, processed_at) "
             "VALUES (?, ?, ?)",
-            (event_id, event_type, datetime.utcnow().isoformat()),
+            (event_id, event_type, utc_now()),
         )
         db.commit()
     except Exception:
@@ -1031,14 +1198,16 @@ def create_billing_portal():
 @app.route("/library")
 @login_required
 def library():
+    brand = current_brand()
+    brand_id = brand["id"] if brand else None
     db = get_db()
     ideas = db.execute(
         """
         SELECT * FROM ideas
-        WHERE user_id = ?
+        WHERE user_id = ? AND (? IS NULL OR brand_id = ? OR brand_id IS NULL)
         ORDER BY id DESC
         """,
-        (session["user_id"],),
+        (session["user_id"], brand_id, brand_id),
     ).fetchall()
     db.close()
     return render_template("library.html", ideas=ideas)
@@ -1061,15 +1230,21 @@ def delete_idea(idea_id):
 @app.route("/export/txt")
 @login_required
 def export_txt():
+    if current_user()["plan"] != "pro":
+        flash("Exports are available on the Pro plan.", "warning")
+        return redirect(url_for("pricing"))
+    brand = current_brand()
+    brand_id = brand["id"] if brand else None
     db = get_db()
     ideas = db.execute(
-        "SELECT * FROM ideas WHERE user_id = ? ORDER BY id DESC",
-        (session["user_id"],),
+        "SELECT * FROM ideas WHERE user_id = ? "
+        "AND (? IS NULL OR brand_id = ? OR brand_id IS NULL) ORDER BY id DESC",
+        (session["user_id"], brand_id, brand_id),
     ).fetchall()
     db.close()
 
     output = io.StringIO()
-    output.write("IDEAFORGE CONTENT LIBRARY\n")
+    output.write("ELITE LEGACY MARKETING CONTENT LIBRARY\n")
     output.write("=" * 50 + "\n\n")
 
     for index, idea in enumerate(ideas, start=1):
@@ -1086,7 +1261,7 @@ def export_txt():
     return send_file(
         buffer,
         as_attachment=True,
-        download_name="ideaforge_content_ideas.txt",
+        download_name="elite_legacy_content_ideas.txt",
         mimetype="text/plain",
     )
 
@@ -1094,10 +1269,16 @@ def export_txt():
 @app.route("/export/csv")
 @login_required
 def export_csv():
+    if current_user()["plan"] != "pro":
+        flash("Exports are available on the Pro plan.", "warning")
+        return redirect(url_for("pricing"))
+    brand = current_brand()
+    brand_id = brand["id"] if brand else None
     db = get_db()
     ideas = db.execute(
-        "SELECT * FROM ideas WHERE user_id = ? ORDER BY id DESC",
-        (session["user_id"],),
+        "SELECT * FROM ideas WHERE user_id = ? "
+        "AND (? IS NULL OR brand_id = ? OR brand_id IS NULL) ORDER BY id DESC",
+        (session["user_id"], brand_id, brand_id),
     ).fetchall()
     db.close()
 
@@ -1119,7 +1300,7 @@ def export_csv():
     return send_file(
         buffer,
         as_attachment=True,
-        download_name="ideaforge_content_ideas.csv",
+        download_name="elite_legacy_content_ideas.csv",
         mimetype="text/csv",
     )
 
@@ -1127,6 +1308,285 @@ def export_csv():
 @app.route("/pricing")
 def pricing():
     return render_template("pricing.html")
+
+
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account():
+    user = current_user()
+    if request.method == "POST":
+        action = request.form.get("action")
+        db = get_db()
+        if action == "profile":
+            display_name = request.form.get("display_name", "").strip()[:80]
+            db.execute(
+                "UPDATE users SET display_name=? WHERE id=?",
+                (display_name, user["id"]),
+            )
+            db.commit()
+            flash("Profile updated.", "success")
+        elif action == "password":
+            old_password = request.form.get("old_password", "")
+            new_password = request.form.get("new_password", "")
+            stored = db.execute(
+                "SELECT password_hash FROM users WHERE id=?", (user["id"],)
+            ).fetchone()
+            if not check_password_hash(stored["password_hash"], old_password):
+                flash("Current password is incorrect.", "danger")
+            elif len(new_password) < 8:
+                flash("New password must contain at least 8 characters.", "danger")
+            else:
+                db.execute(
+                    "UPDATE users SET password_hash=? WHERE id=?",
+                    (generate_password_hash(new_password), user["id"]),
+                )
+                db.commit()
+                flash("Password changed.", "success")
+        db.close()
+        return redirect(url_for("account"))
+    return render_template("account.html", user=user)
+
+
+@app.route("/verify-email/<token>")
+def verify_email(token):
+    try:
+        email = read_account_token(token, "verify", 86400)
+    except (BadSignature, SignatureExpired):
+        flash("That verification link is invalid or expired.", "danger")
+        return redirect(url_for("login"))
+    db = get_db()
+    db.execute("UPDATE users SET email_verified=1 WHERE email=?", (email,))
+    db.commit()
+    db.close()
+    flash("Email verified successfully.", "success")
+    return redirect(url_for("dashboard") if session.get("user_id") else url_for("login"))
+
+
+@app.route("/resend-verification", methods=["POST"])
+@login_required
+def resend_verification():
+    user = current_user()
+    link = PUBLIC_URL + url_for(
+        "verify_email", token=account_token(user["email"], "verify")
+    )
+    sent = send_account_email(
+        user["email"],
+        "Verify your Elite Legacy Marketing account",
+        f"Verify your email:\n\n{link}\n\nThis link expires in 24 hours.",
+    )
+    flash(
+        "Verification email sent." if sent else
+        "Email delivery is not configured yet. Please contact support.",
+        "success" if sent else "warning",
+    )
+    return redirect(url_for("account"))
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        db = get_db()
+        exists = db.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone()
+        db.close()
+        if exists:
+            link = PUBLIC_URL + url_for(
+                "reset_password", token=account_token(email, "reset")
+            )
+            send_account_email(
+                email,
+                "Reset your Elite Legacy Marketing password",
+                f"Reset your password:\n\n{link}\n\nThis link expires in one hour.",
+            )
+        flash("If that account exists, a reset email has been sent.", "success")
+        return redirect(url_for("login"))
+    return render_template("forgot_password.html")
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    try:
+        email = read_account_token(token, "reset", 3600)
+    except (BadSignature, SignatureExpired):
+        flash("That reset link is invalid or expired.", "danger")
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if len(password) < 8:
+            flash("Password must contain at least 8 characters.", "danger")
+        else:
+            db = get_db()
+            db.execute(
+                "UPDATE users SET password_hash=? WHERE email=?",
+                (generate_password_hash(password), email),
+            )
+            db.commit()
+            db.close()
+            flash("Password reset. You can now log in.", "success")
+            return redirect(url_for("login"))
+    return render_template("reset_password.html")
+
+
+@app.route("/brands", methods=["GET", "POST"])
+@login_required
+def brands():
+    user = current_user()
+    db = get_db()
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()[:80]
+        brand_count = db.execute(
+            "SELECT COUNT(*) AS total FROM brands WHERE user_id=?", (user["id"],)
+        ).fetchone()["total"]
+        if user["plan"] != "pro" and brand_count >= 1:
+            db.close()
+            flash("Multiple client workspaces require Pro.", "warning")
+            return redirect(url_for("pricing"))
+        if not name:
+            flash("Enter a brand name.", "danger")
+        else:
+            cursor = db.execute(
+                "INSERT INTO brands (user_id, name, niche, audience, voice, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user["id"], name, request.form.get("niche", "")[:120],
+                 request.form.get("audience", "")[:200],
+                 request.form.get("voice", "")[:200], utc_now()),
+            )
+            db.commit()
+            session["brand_id"] = cursor.lastrowid
+            flash("Brand workspace created.", "success")
+        db.close()
+        return redirect(url_for("brands"))
+    all_brands = db.execute(
+        "SELECT * FROM brands WHERE user_id=? ORDER BY id", (user["id"],)
+    ).fetchall()
+    db.close()
+    return render_template("brands.html", brands=all_brands)
+
+
+@app.route("/brands/<int:brand_id>/select", methods=["POST"])
+@login_required
+def select_brand(brand_id):
+    db = get_db()
+    brand = db.execute(
+        "SELECT id FROM brands WHERE id=? AND user_id=?",
+        (brand_id, session["user_id"]),
+    ).fetchone()
+    db.close()
+    if not brand:
+        abort(404)
+    session["brand_id"] = brand_id
+    flash("Workspace switched.", "success")
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+def run_marketing_tool(tool_name, content, brand):
+    global client
+    if client is None:
+        client = OpenAI()
+    context = ""
+    if brand:
+        context = (
+            f"Brand: {brand['name']}\nNiche: {brand['niche']}\n"
+            f"Audience: {brand['audience']}\nVoice: {brand['voice']}\n"
+        )
+    instructions = {
+        "rewrite": "Rewrite the supplied content into three stronger versions. Label each version and preserve the facts.",
+        "hashtags": "Create 20 relevant hashtags grouped into broad, niche, and local/discovery groups. Avoid spammy tags.",
+        "campaign": "Create a practical marketing campaign with objective, audience, message, channels, seven-day action plan, KPIs, and CTA.",
+    }
+    response = client.responses.create(
+        model="gpt-5-mini",
+        input=f"You are an expert UK marketing strategist.\n{context}\nTask: {instructions[tool_name]}\n\nInput:\n{content}",
+    )
+    return response.output_text.strip()
+
+
+@app.route("/tools", methods=["GET", "POST"])
+@login_required
+def marketing_tools():
+    user = current_user()
+    result = ""
+    selected_tool = request.form.get("tool", "rewrite")
+    if request.method == "POST":
+        if user["plan"] != "pro":
+            flash("Advanced AI tools require Pro.", "warning")
+            return redirect(url_for("pricing"))
+        content = request.form.get("content", "").strip()
+        if selected_tool not in {"rewrite", "hashtags", "campaign"} or not content:
+            flash("Choose a tool and enter some content.", "danger")
+        else:
+            try:
+                result = run_marketing_tool(selected_tool, content, current_brand())
+                log_event(f"tool_{selected_tool}", user["id"])
+            except Exception as error:
+                app.logger.exception("Marketing tool failed: %s", error)
+                flash("The AI tool is temporarily unavailable.", "danger")
+    return render_template("tools.html", result=result, selected_tool=selected_tool)
+
+
+@app.route("/contact", methods=["GET", "POST"])
+def contact():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()[:100]
+        email = request.form.get("email", "").strip().lower()[:200]
+        message = request.form.get("message", "").strip()[:3000]
+        if not name or "@" not in email or not message:
+            flash("Complete every contact field.", "danger")
+        else:
+            db = get_db()
+            db.execute(
+                "INSERT INTO contact_messages (name, email, message, created_at) "
+                "VALUES (?, ?, ?, ?)", (name, email, message, utc_now())
+            )
+            db.commit()
+            db.close()
+            flash("Message received. We will respond as soon as possible.", "success")
+            return redirect(url_for("contact"))
+    return render_template("contact.html")
+
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
+
+
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html")
+
+
+@app.route("/refund-policy")
+def refund_policy():
+    return render_template("refund_policy.html")
+
+
+@app.route("/admin")
+@login_required
+@admin_required
+def admin_dashboard():
+    db = get_db()
+    stats = {
+        "users": db.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        "pro_users": db.execute("SELECT COUNT(*) FROM users WHERE plan='pro'").fetchone()[0],
+        "ideas": db.execute("SELECT COUNT(*) FROM ideas").fetchone()[0],
+        "brands": db.execute("SELECT COUNT(*) FROM brands").fetchone()[0],
+        "messages": db.execute("SELECT COUNT(*) FROM contact_messages").fetchone()[0],
+    }
+    users = db.execute(
+        "SELECT id, email, display_name, plan, subscription_status, email_verified, created_at "
+        "FROM users ORDER BY id DESC LIMIT 100"
+    ).fetchall()
+    events = db.execute(
+        "SELECT event_name, COUNT(*) AS total FROM analytics_events "
+        "GROUP BY event_name ORDER BY total DESC"
+    ).fetchall()
+    messages = db.execute(
+        "SELECT * FROM contact_messages ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    db.close()
+    return render_template(
+        "admin.html", stats=stats, users=users, events=events, messages=messages
+    )
 
 
 @app.route("/upgrade-demo", methods=["POST"])

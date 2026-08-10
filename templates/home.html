@@ -1,79 +1,73 @@
 {% extends "base.html" %}
-
-{% block title %}Elite Legacy Marketing{% endblock %}
-
+{% block title %}Elite Legacy Marketing — AI marketing workspace{% endblock %}
 {% block content %}
-
-<section class="hero">
-
-<h1>AI Marketing Platform</h1>
-
-<p>
-Create better content, build marketing campaigns,
-and grow your business using AI.
-</p>
-
-<div class="hero-buttons">
-<a href="{{ url_for('register') }}" class="button">
-Start Free
-</a>
-
-<a href="{{ url_for('pricing') }}" class="button ghost">
-View Pricing
-</a>
-</div>
-<div class="stats">
-
-    <div class="stat">
-        <strong>500+</strong>
-        <span>Businesses</span>
+<section class="hero landing-hero">
+    <span class="eyebrow">AI MARKETING WORKSPACE</span>
+    <h1>Turn one idea into a month of marketing.</h1>
+    <p>Plan campaigns, create platform-ready content and manage every client brand from one focused workspace.</p>
+    <div class="hero-buttons">
+        <a href="{{ url_for('register') }}" class="button">Start creating free</a>
+        <a href="#product" class="button ghost">See how it works</a>
     </div>
-
-    <div class="stat">
-        <strong>25,000+</strong>
-        <span>Ideas Generated</span>
+    <div class="trust-row">
+        <span>No card required</span><span>Built for UK businesses</span><span>Cancel Pro anytime</span>
     </div>
-
-    <div class="stat">
-        <strong>95%</strong>
-        <span>Time Saved</span>
-    </div>
-
-</div>
 </section>
 
-<section class="features">
-
-<div class="card">
-<h2>💡 AI Content Ideas</h2>
-<p>Create unlimited content ideas in seconds.</p>
-</div>
-
-<div class="card">
-<h2>🎥 Video Scripts</h2>
-<p>Generate TikTok, Instagram and YouTube scripts instantly.</p>
-</div>
-
-<div class="card">
-<h2>🪝 Viral Hooks</h2>
-<p>Stop the scroll with powerful opening lines.</p>
-</div>
-
-<div class="card">
-<h2>📅 Content Calendar</h2>
-<p>Create a full 30-day posting strategy.</p>
-</div>
-
-<div class="card">
-<h2>📈 Marketing Strategy</h2>
-<p>Generate campaigns for your business in minutes.</p>
-</div>
-
-<div class="card">
-<h2>🤝 Agency Tools</h2>
-<p>Manage multiple clients from one dashboard.</p>
-</div>
-
+<section id="product" class="product-preview">
+    <div class="preview-copy">
+        <span class="eyebrow">FROM BRIEF TO CAMPAIGN</span>
+        <h2>Marketing work without the blank page.</h2>
+        <p>Give the platform your niche, audience and goal. It returns hooks, scripts, captions, hashtags and calls to action ready for refinement.</p>
+        <ul class="check-list">
+            <li>Save work inside separate client workspaces</li>
+            <li>Build 30-day content calendars</li>
+            <li>Rewrite drafts and generate campaign strategy</li>
+            <li>Export your content library</li>
+        </ul>
+    </div>
+    <div class="app-mockup">
+        <div class="mockup-top"><span></span><span></span><span></span></div>
+        <div class="mockup-body">
+            <span class="pill">INSTAGRAM REEL</span>
+            <h3>Behind the brand: the story customers remember</h3>
+            <div class="mock-line wide"></div><div class="mock-line"></div><div class="mock-line short"></div>
+            <div class="mock-actions"><span>Hook</span><span>Script</span><span>Caption</span></div>
+        </div>
+    </div>
 </section>
 
+<section class="section center-heading">
+    <span class="eyebrow">EVERYTHING IN ONE PLACE</span>
+    <h2>Built for creators, businesses and growing agencies.</h2>
+    <div class="features landing-features">
+        <article class="card"><span class="feature-icon">💡</span><h3>Content engine</h3><p>Create ideas, hooks, scripts, captions and CTAs for every major platform.</p></article>
+        <article class="card"><span class="feature-icon">📅</span><h3>30-day calendars</h3><p>Turn your campaign brief into a structured month of consistent content.</p></article>
+        <article class="card"><span class="feature-icon">🏢</span><h3>Client workspaces</h3><p>Keep each brand’s audience, voice and content library organised separately.</p></article>
+        <article class="card"><span class="feature-icon">✍️</span><h3>AI rewrite</h3><p>Transform rough drafts into stronger versions without losing the original meaning.</p></article>
+        <article class="card"><span class="feature-icon">#️⃣</span><h3>Hashtag discovery</h3><p>Generate broad, niche and local hashtag groups matched to your content.</p></article>
+        <article class="card"><span class="feature-icon">📈</span><h3>Campaign strategy</h3><p>Build objectives, channels, action plans and measurable KPIs in minutes.</p></article>
+    </div>
+</section>
+
+<section class="how-it-works">
+    <div><span>01</span><h3>Create a workspace</h3><p>Add the brand, audience and tone.</p></div>
+    <div><span>02</span><h3>Choose your goal</h3><p>Brief the AI with a campaign objective.</p></div>
+    <div><span>03</span><h3>Publish with confidence</h3><p>Refine, save and export the finished work.</p></div>
+</section>
+
+<section class="faq section">
+    <div class="center-heading"><span class="eyebrow">COMMON QUESTIONS</span><h2>Clear answers before you begin.</h2></div>
+    <details><summary>Can I use it for client work?</summary><p>Yes. Pro includes multiple brand workspaces designed for freelancers and agencies.</p></details>
+    <details><summary>Does the AI publish automatically?</summary><p>No. You stay in control: review, edit and approve every output before publishing.</p></details>
+    <details><summary>Can I cancel Pro?</summary><p>Yes. Pro subscriptions can be managed through Stripe’s secure customer portal.</p></details>
+    <details><summary>Will every output be perfect?</summary><p>AI output should always be reviewed. Your brand knowledge and final judgement remain essential.</p></details>
+</section>
+
+<section class="final-cta">
+    <span class="eyebrow">BUILD YOUR LEGACY</span>
+    <h2>Your next campaign starts with one brief.</h2>
+    <p>Start free, create your first workspace and turn your ideas into an actionable marketing plan.</p>
+    <a href="{{ url_for('register') }}" class="button">Create your account</a>
+</section>
 {% endblock %}
