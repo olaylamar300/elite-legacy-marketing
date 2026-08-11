@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ service.name }} — Elite Legacy{% endblock %}
+{% block content %}
+<section class="hero service-hero">
+    <span class="eyebrow">{{ service.eyebrow }}</span>
+    <h1>{{ service.headline }}</h1>
+    <p>{{ service.description }}</p>
+    <div class="service-price">£{{ service.price }}<span>/month</span></div>
+    <div class="hero-buttons">
+        <a class="button" href="#get-started">Request setup</a>
+        <a class="button ghost" href="{{ url_for('pricing') }}">Compare services</a>
+    </div>
+</section>
+
+<section class="product-preview service-preview">
+    <div>
+        <span class="eyebrow">WHAT'S INCLUDED</span>
+        <h2>Configured for your business.</h2>
+        <ul class="check-list">{% for feature in service.features %}<li>{{ feature }}</li>{% endfor %}</ul>
+    </div>
+    <div class="panel">
+        <h2>Human-controlled setup</h2>
+        <p class="muted">We collect your requirements before activation so messages, call handling and escalation rules reflect your real business. AI output and calls should be monitored and reviewed.</p>
+        <p class="fine-print">Phone services require a compatible phone number and voice provider. Availability is confirmed during onboarding.</p>
+    </div>
+</section>
+
+<section id="get-started" class="section service-onboarding">
+    <div>
+        <span class="eyebrow">GET STARTED</span>
+        <h2>Tell us how your business works.</h2>
+        <p class="muted">Submitting this form is not a charge. We will confirm setup requirements and payment availability before activation.</p>
+    </div>
+    <form class="panel form-grid" method="post">
+        <label>Business name<input name="business_name" required></label>
+        <label>Your name<input name="contact_name" required></label>
+        <label>Email<input type="email" name="email" value="{{ current_user['email'] if current_user else '' }}" required></label>
+        <label>Phone<input type="tel" name="phone"></label>
+        <label class="full-field">What should this service handle?<textarea name="setup_notes" rows="5" placeholder="Opening hours, common enquiries, escalation rules and anything else we should know"></textarea></label>
+        <button class="button full-field" type="submit">Request {{ service.name }} setup</button>
+    </form>
+</section>
+{% endblock %}

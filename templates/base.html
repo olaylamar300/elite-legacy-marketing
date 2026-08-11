@@ -11,6 +11,7 @@
 <a class="brand" href="{{ url_for('home') }}">Elite Legacy Marketing</a>
     <button class="nav-toggle" type="button" aria-label="Open navigation" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
     <div class="nav-links">
+        <a href="{{ url_for('home') }}#services">Services</a>
         {% if current_user %}
             <a href="{{ url_for('dashboard') }}">Dashboard</a>
             <a href="{{ url_for('generate') }}">Generate</a>

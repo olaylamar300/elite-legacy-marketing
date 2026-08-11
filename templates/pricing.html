@@ -54,4 +54,21 @@
     </article>
 </div>
 
+<section class="section center-heading">
+    <span class="eyebrow">AI BUSINESS SERVICES</span>
+    <h2>Add the support your business needs.</h2>
+</section>
+<div class="grid three service-pricing-grid">
+{% for slug, service in services.items() %}
+    <article class="price-card">
+        <span class="pill">MONTHLY</span>
+        <h3 class="plan-name">{{ service.name }}</h3>
+        <h2>£{{ service.price }}<span>/month</span></h2>
+        <p>{{ service.description }}</p>
+        <ul>{% for feature in service.features %}<li>✓ {{ feature }}</li>{% endfor %}</ul>
+        <a class="button full" href="{{ url_for('service_page', service_slug=slug) }}">View & request setup</a>
+    </article>
+{% endfor %}
+</div>
+
 {% endblock %}

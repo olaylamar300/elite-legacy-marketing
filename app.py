@@ -18,6 +18,11 @@ from werkzeug.security import check_password_hash, generate_password_hash
 load_dotenv()
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
+STRIPE_SERVICE_PRICE_IDS = {
+    "ai-phone-receptionist": os.environ.get("STRIPE_PHONE_RECEPTIONIST_PRICE_ID"),
+    "garage-ai-receptionist": os.environ.get("STRIPE_GARAGE_RECEPTIONIST_PRICE_ID"),
+    "review-automation": os.environ.get("STRIPE_REVIEW_AUTOMATION_PRICE_ID"),
+}
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
@@ -32,6 +37,33 @@ DATABASE = os.environ.get(
 )
 
 FREE_DAILY_LIMIT = 10
+
+SERVICES = {
+    "ai-phone-receptionist": {
+        "name": "AI Phone Receptionist",
+        "price": 80,
+        "eyebrow": "NEVER MISS A BUSINESS CALL",
+        "headline": "A professional first response, even when your team is busy.",
+        "description": "An AI phone receptionist configured around your business, services and call-handling rules.",
+        "features": ["Answer common enquiries", "Capture caller details", "Route urgent calls", "Send call summaries", "Custom business greeting"],
+    },
+    "garage-ai-receptionist": {
+        "name": "Garage AI Receptionist",
+        "price": 100,
+        "eyebrow": "BUILT FOR BUSY GARAGES",
+        "headline": "Keep the workshop moving while every caller gets answered.",
+        "description": "A garage-focused AI receptionist that captures vehicle and booking information using your rules.",
+        "features": ["Capture registration and vehicle details", "Collect service or repair requests", "Handle opening-hours questions", "Flag urgent breakdown enquiries", "Send structured call summaries"],
+    },
+    "review-automation": {
+        "name": "Review Automation",
+        "price": 10,
+        "eyebrow": "BUILD TRUST ON AUTOPILOT",
+        "headline": "Turn completed jobs into a steady flow of customer reviews.",
+        "description": "Automated, brand-friendly review requests with a simple follow-up journey for customers.",
+        "features": ["Automated review requests", "Custom message templates", "Direct review links", "Follow-up reminders", "Simple performance tracking"],
+    },
+}
 
 HOOKS = [
     "Nobody tells you this about {topic}",
@@ -228,6 +260,33 @@ def init_db():
             email TEXT NOT NULL,
             message TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS service_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            service_slug TEXT NOT NULL,
+            business_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            phone TEXT NOT NULL DEFAULT '',
+            setup_notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'new',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS service_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            service_slug TEXT NOT NULL,
+            stripe_customer_id TEXT,
+            stripe_subscription_id TEXT UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, service_slug),
+            FOREIGN KEY(user_id) REFERENCES users(id)
         );
         """
     )
@@ -480,6 +539,23 @@ def sync_subscription(db, subscription, user_id=None):
         period_end=period_end,
         plan=plan,
     )
+
+
+def sync_service_subscription(db, service_slug, *, user_id=None, customer_id=None,
+                              subscription_id=None, status="active"):
+    if service_slug not in SERVICES or not user_id:
+        return 0
+    db.execute(
+        "INSERT INTO service_subscriptions "
+        "(user_id, service_slug, stripe_customer_id, stripe_subscription_id, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, service_slug) DO UPDATE SET "
+        "stripe_customer_id=excluded.stripe_customer_id, "
+        "stripe_subscription_id=excluded.stripe_subscription_id, "
+        "status=excluded.status, updated_at=excluded.updated_at",
+        (int(user_id), service_slug, customer_id, subscription_id, status, utc_now(), utc_now()),
+    )
+    return 1
 
 
 def get_today_usage(user_id):
@@ -988,13 +1064,27 @@ def content_calendar():
 @login_required
 def create_checkout_session():
     user = current_user()
+    service_slug = request.form.get("service", "marketing-pro")
+    if service_slug == "marketing-pro":
+        price_id = STRIPE_PRICE_ID
+        service_name = "Pro Creator"
+    elif service_slug in SERVICES:
+        price_id = STRIPE_SERVICE_PRICE_IDS.get(service_slug)
+        service_name = SERVICES[service_slug]["name"]
+    else:
+        abort(400)
 
-    if not stripe.api_key or not STRIPE_PRICE_ID:
+    if not stripe.api_key or not price_id:
         app.logger.error("Stripe secret key or price ID is missing")
-        flash("Payments are temporarily unavailable. Please try again later.", "danger")
+        flash(
+            f"Online checkout for {service_name} is being prepared. Send your setup request and we will contact you.",
+            "warning",
+        )
+        if service_slug in SERVICES:
+            return redirect(url_for("service_page", service_slug=service_slug) + "#get-started")
         return redirect(url_for("pricing"))
 
-    if user["plan"] == "pro" and user["stripe_customer_id"]:
+    if service_slug == "marketing-pro" and user["plan"] == "pro" and user["stripe_customer_id"]:
         return redirect(url_for("create_billing_portal"))
 
     try:
@@ -1002,7 +1092,7 @@ def create_checkout_session():
             mode="subscription",
             line_items=[
                 {
-                    "price": STRIPE_PRICE_ID,
+                    "price": price_id,
                     "quantity": 1,
                 }
             ],
@@ -1016,9 +1106,10 @@ def create_checkout_session():
             ),
             metadata={
                 "user_id": str(user["id"]),
+                "service": service_slug,
             },
             subscription_data={
-                "metadata": {"user_id": str(user["id"])},
+                "metadata": {"user_id": str(user["id"]), "service": service_slug},
             },
             allow_promotion_codes=True,
         )
@@ -1063,17 +1154,26 @@ def checkout_success():
 
         if checkout_session.get("payment_status") == "paid":
             db = get_db()
+            service_slug = (checkout_session.get("metadata") or {}).get("service", "marketing-pro")
             subscription_id = checkout_session.get("subscription")
             if isinstance(subscription_id, dict):
                 subscription_id = subscription_id.get("id")
-            subscription = stripe.Subscription.retrieve(subscription_id)
-            sync_subscription(db, subscription, user_id=session["user_id"])
+            if service_slug in SERVICES:
+                sync_service_subscription(
+                    db,
+                    service_slug,
+                    user_id=session["user_id"],
+                    customer_id=checkout_session.get("customer"),
+                    subscription_id=subscription_id,
+                )
+                success_message = f"Payment completed. We will contact you to configure {SERVICES[service_slug]['name']}."
+            else:
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                sync_subscription(db, subscription, user_id=session["user_id"])
+                success_message = "Payment completed. Your Pro account is now active!"
             db.commit()
             db.close()
-            flash(
-                "Payment completed. Your Pro account is now active!",
-                "success",
-            )
+            flash(success_message, "success")
         else:
             flash("Your payment is still processing.", "warning")
 
@@ -1120,23 +1220,42 @@ def stripe_webhook():
 
     try:
         if event_type == "checkout.session.completed":
-            user_id = (stripe_object.get("metadata") or {}).get("user_id")
+            metadata = stripe_object.get("metadata") or {}
+            user_id = metadata.get("user_id")
+            service_slug = metadata.get("service", "marketing-pro")
             if stripe_object.get("payment_status") == "paid" and user_id:
-                update_subscription_user(
-                    db,
-                    user_id=user_id,
-                    customer_id=stripe_object.get("customer"),
-                    subscription_id=stripe_object.get("subscription"),
-                    status="active",
-                    plan="pro",
-                )
+                if service_slug in SERVICES:
+                    sync_service_subscription(
+                        db, service_slug, user_id=user_id,
+                        customer_id=stripe_object.get("customer"),
+                        subscription_id=stripe_object.get("subscription"),
+                    )
+                else:
+                    update_subscription_user(
+                        db,
+                        user_id=user_id,
+                        customer_id=stripe_object.get("customer"),
+                        subscription_id=stripe_object.get("subscription"),
+                        status="active",
+                        plan="pro",
+                    )
 
         elif event_type in {
             "customer.subscription.created",
             "customer.subscription.updated",
             "customer.subscription.deleted",
         }:
-            sync_subscription(db, stripe_object)
+            metadata = stripe_object.get("metadata") or {}
+            service_slug = metadata.get("service", "marketing-pro")
+            if service_slug in SERVICES:
+                sync_service_subscription(
+                    db, service_slug, user_id=metadata.get("user_id"),
+                    customer_id=stripe_object.get("customer"),
+                    subscription_id=stripe_object.get("id"),
+                    status=stripe_object.get("status", "none"),
+                )
+            else:
+                sync_subscription(db, stripe_object)
 
         elif event_type == "invoice.paid":
             subscription_id = subscription_id_from_invoice(stripe_object)
@@ -1307,7 +1426,39 @@ def export_csv():
 
 @app.route("/pricing")
 def pricing():
-    return render_template("pricing.html")
+    return render_template("pricing.html", services=SERVICES)
+
+
+@app.route("/services/<service_slug>", methods=["GET", "POST"])
+def service_page(service_slug):
+    service = SERVICES.get(service_slug)
+    if not service:
+        abort(404)
+
+    if request.method == "POST":
+        business_name = request.form.get("business_name", "").strip()[:120]
+        contact_name = request.form.get("contact_name", "").strip()[:120]
+        email = request.form.get("email", "").strip().lower()[:200]
+        phone = request.form.get("phone", "").strip()[:50]
+        setup_notes = request.form.get("setup_notes", "").strip()[:2000]
+        if not business_name or not contact_name or "@" not in email:
+            flash("Enter your business name, contact name and a valid email.", "danger")
+            return redirect(url_for("service_page", service_slug=service_slug) + "#get-started")
+        db = get_db()
+        db.execute(
+            "INSERT INTO service_requests "
+            "(user_id, service_slug, business_name, contact_name, email, phone, setup_notes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session.get("user_id"), service_slug, business_name, contact_name,
+             email, phone, setup_notes, utc_now()),
+        )
+        db.commit()
+        db.close()
+        log_event("service_request", session.get("user_id"), service_slug)
+        flash(f"Your {service['name']} setup request has been received.", "success")
+        return redirect(url_for("service_page", service_slug=service_slug))
+
+    return render_template("service.html", service=service, service_slug=service_slug)
 
 
 @app.route("/account", methods=["GET", "POST"])
@@ -1571,6 +1722,7 @@ def admin_dashboard():
         "ideas": db.execute("SELECT COUNT(*) FROM ideas").fetchone()[0],
         "brands": db.execute("SELECT COUNT(*) FROM brands").fetchone()[0],
         "messages": db.execute("SELECT COUNT(*) FROM contact_messages").fetchone()[0],
+        "service_requests": db.execute("SELECT COUNT(*) FROM service_requests").fetchone()[0],
     }
     users = db.execute(
         "SELECT id, email, display_name, plan, subscription_status, email_verified, created_at "
@@ -1583,9 +1735,13 @@ def admin_dashboard():
     messages = db.execute(
         "SELECT * FROM contact_messages ORDER BY id DESC LIMIT 20"
     ).fetchall()
+    service_requests = db.execute(
+        "SELECT * FROM service_requests ORDER BY id DESC LIMIT 50"
+    ).fetchall()
     db.close()
     return render_template(
-        "admin.html", stats=stats, users=users, events=events, messages=messages
+        "admin.html", stats=stats, users=users, events=events, messages=messages,
+        service_requests=service_requests,
     )
 
 

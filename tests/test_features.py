@@ -38,7 +38,12 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertEqual(brand["name"], "My Brand")
 
     def test_public_and_logged_in_pages_render(self):
-        for path in ["/", "/pricing", "/terms", "/privacy", "/refund-policy", "/contact"]:
+        for path in [
+            "/", "/pricing", "/terms", "/privacy", "/refund-policy", "/contact",
+            "/services/ai-phone-receptionist",
+            "/services/garage-ai-receptionist",
+            "/services/review-automation",
+        ]:
             self.assertEqual(self.client.get(path).status_code, 200, path)
         self.register()
         for path in ["/dashboard", "/account", "/brands", "/tools", "/library", "/generate"]:
@@ -70,6 +75,25 @@ class PlatformFeatureTests(unittest.TestCase):
     def test_non_admin_cannot_open_admin_dashboard(self):
         self.register()
         self.assertEqual(self.client.get("/admin").status_code, 403)
+
+    def test_service_setup_request_is_saved(self):
+        response = self.client.post(
+            "/services/garage-ai-receptionist",
+            data={
+                "business_name": "Elite Garage",
+                "contact_name": "Owner",
+                "email": "garage@example.com",
+                "phone": "07123456789",
+                "setup_notes": "Capture registrations and service requests.",
+            },
+            follow_redirects=True,
+        )
+        self.assertIn(b"setup request has been received", response.data)
+        db = app_module.get_db()
+        saved = db.execute("SELECT * FROM service_requests").fetchone()
+        db.close()
+        self.assertEqual(saved["service_slug"], "garage-ai-receptionist")
+        self.assertEqual(saved["business_name"], "Elite Garage")
 
 
 if __name__ == "__main__":
