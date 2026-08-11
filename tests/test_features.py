@@ -1,4 +1,5 @@
 import os
+import hashlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -94,6 +95,35 @@ class PlatformFeatureTests(unittest.TestCase):
         db.close()
         self.assertEqual(saved["service_slug"], "garage-ai-receptionist")
         self.assertEqual(saved["business_name"], "Elite Garage")
+
+    def test_admin_claim_grants_all_services_and_expires(self):
+        with patch.object(app_module, "send_account_email", return_value=True):
+            self.client.post(
+                "/register",
+                data={"email": app_module.ADMIN_EMAIL, "password": "temporary123"},
+            )
+        token = "isolated-test-claim-token"
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with patch.object(app_module, "ADMIN_CLAIM_TOKEN_HASH", token_hash):
+            response = self.client.post(
+                f"/claim-admin/{token}",
+                data={"password": "chosenpassword123"},
+                follow_redirects=True,
+            )
+        self.assertIn(b"administrator account is ready", response.data)
+        db = app_module.get_db()
+        user = db.execute(
+            "SELECT * FROM users WHERE email=?", (app_module.ADMIN_EMAIL,)
+        ).fetchone()
+        services = db.execute(
+            "SELECT * FROM service_subscriptions WHERE user_id=?", (user["id"],)
+        ).fetchall()
+        db.close()
+        self.assertEqual(user["plan"], "pro")
+        self.assertEqual(len(services), 3)
+        self.assertTrue(all(row["status"] == "complimentary" for row in services))
+        with patch.object(app_module, "ADMIN_CLAIM_TOKEN_HASH", token_hash):
+            self.assertEqual(self.client.get(f"/claim-admin/{token}").status_code, 410)
 
 
 if __name__ == "__main__":

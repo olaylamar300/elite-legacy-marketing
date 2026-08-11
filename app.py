@@ -1,4 +1,6 @@
 import csv
+import hashlib
+import hmac
 import io
 import os
 import smtplib
@@ -24,7 +26,8 @@ STRIPE_SERVICE_PRICE_IDS = {
     "review-automation": os.environ.get("STRIPE_REVIEW_AUTOMATION_PRICE_ID"),
 }
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "olaylamarbusiness@gmail.com").strip().lower()
+ADMIN_CLAIM_TOKEN_HASH = "2b0a27d0095482b957763e0aecf6c6af5d5e88b6c4991ec3ab90857d6694283e"
 SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://wwwelite-legacy-marketing.com").rstrip("/")
 client = None
@@ -322,6 +325,16 @@ def init_db():
         "ON users(stripe_subscription_id) "
         "WHERE stripe_subscription_id IS NOT NULL"
     )
+    admin = db.execute("SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,)).fetchone()
+    if admin:
+        db.execute("UPDATE users SET plan='pro' WHERE id=?", (admin["id"],))
+        for service_slug in SERVICES:
+            db.execute(
+                "INSERT INTO service_subscriptions "
+                "(user_id, service_slug, status, created_at, updated_at) VALUES (?, ?, 'complimentary', ?, ?) "
+                "ON CONFLICT(user_id, service_slug) DO UPDATE SET status='complimentary', updated_at=excluded.updated_at",
+                (admin["id"], service_slug, utc_now(), utc_now()),
+            )
     db.commit()
     db.close()
 
@@ -1496,6 +1509,41 @@ def account():
         db.close()
         return redirect(url_for("account"))
     return render_template("account.html", user=user)
+
+
+@app.route("/claim-admin/<token>", methods=["GET", "POST"])
+def claim_admin(token):
+    supplied_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(supplied_hash, ADMIN_CLAIM_TOKEN_HASH):
+        abort(404)
+    db = get_db()
+    user = db.execute(
+        "SELECT id, email_verified FROM users WHERE email=?", (ADMIN_EMAIL,)
+    ).fetchone()
+    if not user:
+        db.close()
+        abort(404)
+    if user["email_verified"]:
+        db.close()
+        return "This one-time account claim link has already been used.", 410
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if len(password) < 8:
+            db.close()
+            flash("Password must contain at least 8 characters.", "danger")
+            return redirect(url_for("claim_admin", token=token))
+        db.execute(
+            "UPDATE users SET password_hash=?, email_verified=1, plan='pro' WHERE id=?",
+            (generate_password_hash(password), user["id"]),
+        )
+        db.commit()
+        db.close()
+        session.clear()
+        session["user_id"] = user["id"]
+        flash("Your administrator account is ready.", "success")
+        return redirect(url_for("dashboard"))
+    db.close()
+    return render_template("claim_admin.html")
 
 
 @app.route("/verify-email/<token>")
