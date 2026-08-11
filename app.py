@@ -48,7 +48,12 @@ SERVICES = {
         "eyebrow": "NEVER MISS A BUSINESS CALL",
         "headline": "A professional first response, even when your team is busy.",
         "description": "An AI phone receptionist configured around your business, services and call-handling rules.",
-        "features": ["Answer common enquiries", "Capture caller details", "Route urgent calls", "Send call summaries", "Custom business greeting"],
+        "features": [
+            "24/7 call answering", "Natural AI conversation", "Business knowledge",
+            "Caller identification", "Intent detection", "Appointment booking",
+            "Rescheduling and cancellations", "SMS confirmations", "Appointment reminders",
+            "Take a message", "Call summaries", "Business dashboard",
+        ],
     },
     "garage-ai-receptionist": {
         "name": "Garage AI Receptionist",
@@ -56,7 +61,11 @@ SERVICES = {
         "eyebrow": "BUILT FOR BUSY GARAGES",
         "headline": "Keep the workshop moving while every caller gets answered.",
         "description": "A garage-focused AI receptionist that captures vehicle and booking information using your rules.",
-        "features": ["Capture registration and vehicle details", "Collect service or repair requests", "Handle opening-hours questions", "Flag urgent breakdown enquiries", "Send structured call summaries"],
+        "features": [
+            "Garage bookings", "AI customer service", "WhatsApp messaging",
+            "Vehicle information collection", "Automatic reminders",
+            "Repair status messages", "Missed-call recovery", "Garage dashboard",
+        ],
     },
     "review-automation": {
         "name": "Review Automation",
@@ -64,7 +73,12 @@ SERVICES = {
         "eyebrow": "BUILD TRUST ON AUTOPILOT",
         "headline": "Turn completed jobs into a steady flow of customer reviews.",
         "description": "Automated, brand-friendly review requests with a simple follow-up journey for customers.",
-        "features": ["Automated review requests", "Custom message templates", "Direct review links", "Follow-up reminders", "Simple performance tracking"],
+        "features": [
+            "Automatic review requests", "SMS requests", "Email requests",
+            "WhatsApp integration", "Direct review links", "QR codes",
+            "Custom messages", "Scheduled delays", "Automatic follow-ups",
+            "Customer database", "Do-not-contact controls", "Review dashboard",
+        ],
     },
 }
 
@@ -273,6 +287,7 @@ def init_db():
             contact_name TEXT NOT NULL,
             email TEXT NOT NULL,
             phone TEXT NOT NULL DEFAULT '',
+            contact_line TEXT NOT NULL DEFAULT '',
             setup_notes TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'new',
             created_at TEXT NOT NULL,
@@ -315,6 +330,12 @@ def init_db():
     }
     if "brand_id" not in idea_columns:
         db.execute("ALTER TABLE ideas ADD COLUMN brand_id INTEGER")
+
+    service_request_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(service_requests)").fetchall()
+    }
+    if "contact_line" not in service_request_columns:
+        db.execute("ALTER TABLE service_requests ADD COLUMN contact_line TEXT NOT NULL DEFAULT ''")
 
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_customer_idx "
@@ -1453,6 +1474,7 @@ def service_page(service_slug):
         contact_name = request.form.get("contact_name", "").strip()[:120]
         email = request.form.get("email", "").strip().lower()[:200]
         phone = request.form.get("phone", "").strip()[:50]
+        contact_line = request.form.get("contact_line", "").strip()[:80]
         setup_notes = request.form.get("setup_notes", "").strip()[:2000]
         if not business_name or not contact_name or "@" not in email:
             flash("Enter your business name, contact name and a valid email.", "danger")
@@ -1460,10 +1482,10 @@ def service_page(service_slug):
         db = get_db()
         db.execute(
             "INSERT INTO service_requests "
-            "(user_id, service_slug, business_name, contact_name, email, phone, setup_notes, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(user_id, service_slug, business_name, contact_name, email, phone, contact_line, setup_notes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session.get("user_id"), service_slug, business_name, contact_name,
-             email, phone, setup_notes, utc_now()),
+             email, phone, contact_line, setup_notes, utc_now()),
         )
         db.commit()
         db.close()

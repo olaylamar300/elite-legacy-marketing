@@ -85,6 +85,7 @@ class PlatformFeatureTests(unittest.TestCase):
                 "contact_name": "Owner",
                 "email": "garage@example.com",
                 "phone": "07123456789",
+                "contact_line": "020 7946 0123",
                 "setup_notes": "Capture registrations and service requests.",
             },
             follow_redirects=True,
@@ -95,6 +96,7 @@ class PlatformFeatureTests(unittest.TestCase):
         db.close()
         self.assertEqual(saved["service_slug"], "garage-ai-receptionist")
         self.assertEqual(saved["business_name"], "Elite Garage")
+        self.assertEqual(saved["contact_line"], "020 7946 0123")
 
     def test_admin_claim_grants_all_services_and_expires(self):
         with patch.object(app_module, "send_account_email", return_value=True):

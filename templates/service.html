@@ -22,6 +22,7 @@
         <h2>Human-controlled setup</h2>
         <p class="muted">We collect your requirements before activation so messages, call handling and escalation rules reflect your real business. AI output and calls should be monitored and reviewed.</p>
         <p class="fine-print">Phone services require a compatible phone number and voice provider. Availability is confirmed during onboarding.</p>
+        <p class="fine-print"><strong>Keep your existing number:</strong> customers can request call forwarding, number porting or a compatible existing business line. WhatsApp connections require access to the business’s own eligible WhatsApp number and approval through the selected provider.</p>
     </div>
 </section>
 
@@ -36,6 +37,7 @@
         <label>Your name<input name="contact_name" required></label>
         <label>Email<input type="email" name="email" value="{{ current_user['email'] if current_user else '' }}" required></label>
         <label>Phone<input type="tel" name="phone"></label>
+        <label>Existing business contact line<input type="tel" name="contact_line" placeholder="Number to connect, if applicable"></label>
         <label class="full-field">What should this service handle?<textarea name="setup_notes" rows="5" placeholder="Opening hours, common enquiries, escalation rules and anything else we should know"></textarea></label>
         <button class="button full-field" type="submit">Request {{ service.name }} setup</button>
     </form>
