@@ -38,7 +38,7 @@ class PlatformFeatureTests(unittest.TestCase):
     def test_registration_creates_first_brand_and_dashboard_renders(self):
         response = self.register()
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Your content dashboard", response.data)
+        self.assertIn(b"Marketing content workspace", response.data)
         db = app_module.get_db()
         brand = db.execute("SELECT * FROM brands").fetchone()
         db.close()

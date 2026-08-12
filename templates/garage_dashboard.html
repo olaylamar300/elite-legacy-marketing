@@ -2,7 +2,7 @@
 {% block title %}Garage calls — Elite Legacy Marketing{% endblock %}
 {% block content %}
 <div class="page-heading">
-    <div><span class="eyebrow">GARAGE RECEPTIONIST</span><h1>{{ garage['business_name'] if garage else 'All garages' }}</h1><p class="muted">Calls and booking requests collected by the AI receptionist.</p></div>
+    <div><span class="eyebrow">GARAGE OPERATIONS DASHBOARD</span><h1>{{ garage['business_name'] if garage else 'Garage portfolio' }}</h1><p class="muted">Calls and booking requests collected by the AI receptionist.</p></div>
     {% if garage %}<a class="button ghost" href="{{ url_for('garage_settings') }}">Garage settings</a>{% endif %}
 </div>
 <div class="grid three stats-grid">

@@ -62,7 +62,7 @@ SERVICES = {
         "name": "Garage AI Receptionist",
         "price": 400,
         "eyebrow": "BUILT FOR BUSY GARAGES",
-        "headline": "Keep the workshop moving while every caller gets answered.",
+        "headline": "Intelligent call management for modern, high-performing garages.",
         "description": "A garage-focused AI receptionist that captures vehicle and booking information using your rules.",
         "features": [
             "Garage bookings", "AI customer service", "WhatsApp messaging",

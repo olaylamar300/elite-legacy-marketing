@@ -4,7 +4,7 @@
 <div class="page-heading">
     <div>
         <span class="badge">{{ current_user['plan']|upper }} PLAN</span>
-        <h1>Your content dashboard</h1>
+        <h1>Marketing content workspace</h1>
         <p class="muted">{{ current_user['email'] }}</p>
         {% if current_brand %}<p class="workspace-label">Workspace: <strong>{{ current_brand['name'] }}</strong></p>{% endif %}
     </div>
@@ -51,7 +51,7 @@
 
 <section class="section">
     <div class="section-title">
-        <h2>Recent ideas</h2>
+        <h2>Recently generated content</h2>
         <a href="{{ url_for('library') }}">View full library</a>
     </div>
     {% if recent_ideas %}
