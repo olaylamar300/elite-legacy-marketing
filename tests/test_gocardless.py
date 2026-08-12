@@ -69,6 +69,9 @@ class GoCardlessLifecycleTests(unittest.TestCase):
         request_payload = api.call_args_list[0].args[2]["billing_requests"]
         self.assertEqual(request_payload["mandate_request"]["scheme"], "bacs")
         self.assertNotIn("subscription_request", request_payload)
+        flow_payload = api.call_args_list[1].args[2]["billing_request_flows"]
+        self.assertTrue(flow_payload["redirect_uri"].startswith("https://"))
+        self.assertTrue(flow_payload["exit_uri"].startswith("https://"))
 
     def test_success_creates_monthly_subscription_and_setup_workspace(self):
         with patch.object(app_module, "gocardless_request", side_effect=self.api_side_effect):

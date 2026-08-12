@@ -1418,8 +1418,9 @@ def create_gocardless_checkout():
             idempotency_key=f"garage-mandate-{checkout_token}",
         )["billing_requests"]
         billing_request_id = billing_request["id"]
-        redirect_uri = url_for(
-            "gocardless_checkout_success", checkout=checkout_token, _external=True
+        redirect_uri = (
+            f"{PUBLIC_URL}{url_for('gocardless_checkout_success')}"
+            f"?checkout={checkout_token}"
         )
         flow = gocardless_request(
             "POST",
@@ -1427,8 +1428,9 @@ def create_gocardless_checkout():
             {
                 "billing_request_flows": {
                     "redirect_uri": redirect_uri,
-                    "exit_uri": url_for(
-                        "service_page", service_slug="garage-ai-receptionist", _external=True
+                    "exit_uri": (
+                        f"{PUBLIC_URL}"
+                        f"{url_for('service_page', service_slug='garage-ai-receptionist')}"
                     ),
                     "prefilled_customer": {"email": user["email"]},
                     "links": {"billing_request": billing_request_id},
