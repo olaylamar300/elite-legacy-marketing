@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Garage settings — Elite Legacy Marketing{% endblock %}
+{% block content %}
+<div class="page-heading"><div><span class="eyebrow">GARAGE WORKSPACE</span><h1>{{ garage['business_name'] }}</h1><p class="muted">Keep this information accurate so your receptionist handles callers correctly.</p></div></div>
+<form class="panel form-grid" method="post">
+    <label>Business name<input name="business_name" value="{{ garage['business_name'] }}" required></label>
+    <label>Contact name<input name="contact_name" value="{{ garage['contact_name'] }}"></label>
+    <label>Contact phone<input name="contact_phone" value="{{ garage['contact_phone'] }}"></label>
+    <label>Business line<input name="business_line" value="{{ garage['business_line'] }}"></label>
+    <label class="full-field">Opening hours<textarea name="opening_hours" rows="4">{{ garage['opening_hours'] }}</textarea></label>
+    <label class="full-field">Services offered<textarea name="services_offered" rows="5">{{ garage['services_offered'] }}</textarea></label>
+    <label class="full-field">Booking rules<textarea name="booking_rules" rows="5">{{ garage['booking_rules'] }}</textarea></label>
+    <label class="full-field">Escalation rules<textarea name="escalation_rules" rows="5">{{ garage['escalation_rules'] }}</textarea></label>
+    <button class="button full-field" type="submit">Save garage settings</button>
+</form>
+{% if is_admin %}<section class="section panel"><h2>Telnyx connection</h2><p class="muted">Use this garage-specific URL in its <code>save_garage_booking</code> webhook tool:</p><code>{{ public_url if public_url else '' }}/telnyx/tools/garage-booking/{{ garage['webhook_key'] }}</code></section>{% endif %}
+{% endblock %}

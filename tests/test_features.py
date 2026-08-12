@@ -84,6 +84,7 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get("/admin").status_code, 403)
 
     def test_service_setup_request_is_saved(self):
+        self.register()
         response = self.client.post(
             "/services/garage-ai-receptionist",
             data={
@@ -147,6 +148,23 @@ class PlatformFeatureTests(unittest.TestCase):
             },
         )
 
+    def create_test_garage(self, email="garage-owner@example.com", assistant_id="assistant-test"):
+        db = app_module.get_db()
+        cursor = db.execute(
+            "INSERT INTO users (email, password_hash, plan, created_at) VALUES (?, 'unused', 'free', ?)",
+            (email, app_module.utc_now()),
+        )
+        user_id = cursor.lastrowid
+        garage = db.execute(
+            "INSERT INTO garage_accounts (user_id, business_name, contact_email, telnyx_assistant_id, webhook_key, status, created_at, updated_at) "
+            "VALUES (?, 'Test Garage', ?, ?, ?, 'active', ?, ?)",
+            (user_id, email, assistant_id, "key-" + hashlib.sha256(email.encode()).hexdigest()[:16], app_module.utc_now(), app_module.utc_now()),
+        )
+        garage_id = garage.lastrowid
+        db.commit()
+        db.close()
+        return user_id, garage_id
+
     def telnyx_tool_post(self, payload, private_key, call_control_id):
         raw = json.dumps(payload, separators=(",", ":")).encode()
         timestamp = str(int(time.time()))
@@ -163,6 +181,7 @@ class PlatformFeatureTests(unittest.TestCase):
         )
 
     def test_signed_telnyx_booking_and_call_event_reach_garage_dashboard(self):
+        _, garage_id = self.create_test_garage()
         private_key = Ed25519PrivateKey.generate()
         public_key = base64.b64encode(private_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
@@ -210,6 +229,7 @@ class PlatformFeatureTests(unittest.TestCase):
         db.close()
         self.assertEqual(saved["vehicle_registration"], "AB12 CDE")
         self.assertEqual(saved["duration_seconds"], 95)
+        self.assertEqual(saved["garage_id"], garage_id)
 
     def test_telnyx_rejects_unsigned_requests(self):
         response = self.client.post(
@@ -218,12 +238,14 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_telnyx_booking_uses_automatic_call_control_header(self):
+        self.create_test_garage()
         private_key = Ed25519PrivateKey.generate()
         public_key = base64.b64encode(private_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
         )).decode()
-        with patch.object(app_module, "TELNYX_PUBLIC_KEY", public_key):
+        with patch.object(app_module, "TELNYX_PUBLIC_KEY", public_key), \
+             patch.object(app_module, "TELNYX_ASSISTANT_ID", "assistant-test"):
             response = self.telnyx_tool_post(
                 {"customer_name": "Jordan", "vehicle_registration": "XY12 ZZZ"},
                 private_key,
@@ -237,6 +259,28 @@ class PlatformFeatureTests(unittest.TestCase):
         ).fetchone()
         db.close()
         self.assertEqual(saved["customer_name"], "Jordan")
+
+    def test_garage_users_only_see_their_own_calls(self):
+        first_user, first_garage = self.create_test_garage("first@example.com", "assistant-first")
+        second_user, second_garage = self.create_test_garage("second@example.com", "assistant-second")
+        db = app_module.get_db()
+        now = app_module.utc_now()
+        db.execute(
+            "INSERT INTO garage_calls (conversation_id, garage_id, customer_name, created_at, updated_at) VALUES ('first-call', ?, 'First Customer', ?, ?)",
+            (first_garage, now, now),
+        )
+        db.execute(
+            "INSERT INTO garage_calls (conversation_id, garage_id, customer_name, created_at, updated_at) VALUES ('second-call', ?, 'Second Customer', ?, ?)",
+            (second_garage, now, now),
+        )
+        db.commit()
+        db.close()
+        with self.client.session_transaction() as session:
+            session["user_id"] = first_user
+        response = self.client.get("/garage-dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"First Customer", response.data)
+        self.assertNotIn(b"Second Customer", response.data)
 
 
 if __name__ == "__main__":

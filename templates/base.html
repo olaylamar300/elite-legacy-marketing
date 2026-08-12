@@ -20,7 +20,8 @@
             <a href="{{ url_for('brands') }}">Brands{% if current_brand %}: {{ current_brand['name'] }}{% endif %}</a>
             <a href="{{ url_for('pricing') }}">Pricing</a>
             <a href="{{ url_for('account') }}">Account</a>
-            {% if is_admin %}<a href="{{ url_for('garage_dashboard') }}">Garage calls</a><a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}
+            {% if current_garage %}<a href="{{ url_for('garage_dashboard') }}">Garage calls</a><a href="{{ url_for('garage_settings') }}">Garage settings</a>{% endif %}
+            {% if is_admin %}<a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %}
             <a class="button small ghost" href="{{ url_for('logout') }}">Log out</a>
         {% else %}
             <a href="{{ url_for('pricing') }}">Pricing</a>

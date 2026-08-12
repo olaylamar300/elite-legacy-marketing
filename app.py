@@ -12,6 +12,7 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 from openai import OpenAI
 import random
+import secrets
 import sqlite3
 from datetime import date, datetime, timezone
 from functools import wraps
@@ -64,7 +65,7 @@ SERVICES = {
     },
     "garage-ai-receptionist": {
         "name": "Garage AI Receptionist",
-        "price": 100,
+        "price": 400,
         "eyebrow": "BUILT FOR BUSY GARAGES",
         "headline": "Keep the workshop moving while every caller gets answered.",
         "description": "A garage-focused AI receptionist that captures vehicle and booking information using your rules.",
@@ -345,6 +346,28 @@ def init_db():
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS garage_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            service_request_id INTEGER,
+            business_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL DEFAULT '',
+            contact_email TEXT NOT NULL DEFAULT '',
+            contact_phone TEXT NOT NULL DEFAULT '',
+            business_line TEXT NOT NULL DEFAULT '',
+            opening_hours TEXT NOT NULL DEFAULT '',
+            services_offered TEXT NOT NULL DEFAULT '',
+            booking_rules TEXT NOT NULL DEFAULT '',
+            escalation_rules TEXT NOT NULL DEFAULT '',
+            telnyx_assistant_id TEXT UNIQUE,
+            webhook_key TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'setup',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(service_request_id) REFERENCES service_requests(id)
+        );
         """
     )
 
@@ -376,6 +399,12 @@ def init_db():
     if "contact_line" not in service_request_columns:
         db.execute("ALTER TABLE service_requests ADD COLUMN contact_line TEXT NOT NULL DEFAULT ''")
 
+    garage_call_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(garage_calls)").fetchall()
+    }
+    if "garage_id" not in garage_call_columns:
+        db.execute("ALTER TABLE garage_calls ADD COLUMN garage_id INTEGER")
+
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_customer_idx "
         "ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL"
@@ -384,6 +413,9 @@ def init_db():
         "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_subscription_idx "
         "ON users(stripe_subscription_id) "
         "WHERE stripe_subscription_id IS NOT NULL"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS garage_accounts_user_idx ON garage_accounts(user_id)"
     )
     admin = db.execute("SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,)).fetchone()
     if admin:
@@ -395,6 +427,30 @@ def init_db():
                 "ON CONFLICT(user_id, service_slug) DO UPDATE SET status='complimentary', updated_at=excluded.updated_at",
                 (admin["id"], service_slug, utc_now(), utc_now()),
             )
+        owner_garage = db.execute(
+            "SELECT id FROM garage_accounts WHERE user_id=? ORDER BY id LIMIT 1",
+            (admin["id"],),
+        ).fetchone()
+        if not owner_garage:
+            now = utc_now()
+            cursor = db.execute(
+                "INSERT INTO garage_accounts "
+                "(user_id, business_name, contact_name, contact_email, telnyx_assistant_id, webhook_key, status, created_at, updated_at) "
+                "VALUES (?, 'Elite Garage', 'Owner', ?, ?, ?, 'active', ?, ?)",
+                (admin["id"], ADMIN_EMAIL, TELNYX_ASSISTANT_ID or None, secrets.token_urlsafe(24), now, now),
+            )
+            owner_garage_id = cursor.lastrowid
+        else:
+            owner_garage_id = owner_garage["id"]
+            if TELNYX_ASSISTANT_ID:
+                db.execute(
+                    "UPDATE garage_accounts SET telnyx_assistant_id=COALESCE(telnyx_assistant_id, ?) WHERE id=?",
+                    (TELNYX_ASSISTANT_ID, owner_garage_id),
+                )
+        db.execute(
+            "UPDATE garage_calls SET garage_id=? WHERE garage_id IS NULL",
+            (owner_garage_id,),
+        )
     db.commit()
     db.close()
 
@@ -427,6 +483,19 @@ def current_user():
     ).fetchone()
     db.close()
     return user
+
+
+def current_garage():
+    user = current_user()
+    if not user:
+        return None
+    db = get_db()
+    garage = db.execute(
+        "SELECT * FROM garage_accounts WHERE user_id=? ORDER BY id LIMIT 1",
+        (user["id"],),
+    ).fetchone()
+    db.close()
+    return garage
 
 
 def utc_now():
@@ -803,6 +872,8 @@ def inject_user():
         "support_email": SUPPORT_EMAIL,
         "support_contact": SUPPORT_EMAIL or "the contact form on this website",
         "email_enabled": email_configured(),
+        "current_garage": current_garage(),
+        "public_url": PUBLIC_URL,
     }
 
 
@@ -1529,6 +1600,9 @@ def service_page(service_slug):
         abort(404)
 
     if request.method == "POST":
+        if service_slug == "garage-ai-receptionist" and not session.get("user_id"):
+            flash("Create or sign in to your account before requesting a garage workspace.", "warning")
+            return redirect(url_for("register"))
         business_name = request.form.get("business_name", "").strip()[:120]
         contact_name = request.form.get("contact_name", "").strip()[:120]
         email = request.form.get("email", "").strip().lower()[:200]
@@ -1556,13 +1630,28 @@ def service_page(service_slug):
 
 
 @app.route("/telnyx/tools/garage-booking", methods=["POST"])
-def telnyx_garage_booking_tool():
+@app.route("/telnyx/tools/garage-booking/<webhook_key>", methods=["POST"])
+def telnyx_garage_booking_tool(webhook_key=None):
     """Receive structured booking details collected by the Telnyx assistant."""
     raw_body = request.get_data(cache=True)
     if not verify_telnyx_request(raw_body):
         return jsonify({"error": "Invalid Telnyx signature"}), 401
 
     data = request.get_json(silent=True) or {}
+    db = get_db()
+    if webhook_key:
+        garage = db.execute(
+            "SELECT * FROM garage_accounts WHERE webhook_key=? AND status IN ('setup', 'active')",
+            (webhook_key,),
+        ).fetchone()
+    else:
+        garage = db.execute(
+            "SELECT * FROM garage_accounts WHERE telnyx_assistant_id=? ORDER BY id LIMIT 1",
+            (TELNYX_ASSISTANT_ID,),
+        ).fetchone()
+    if not garage:
+        db.close()
+        return jsonify({"error": "Garage workspace not found"}), 404
     conversation_id = str(
         data.get("conversation_id")
         or data.get("telnyx_conversation_id")
@@ -1591,16 +1680,16 @@ def telnyx_garage_booking_tool():
         for name, limit in fields.items()
     }
     now = utc_now()
-    db = get_db()
     db.execute(
         """
         INSERT INTO garage_calls (
-            conversation_id, assistant_id, customer_name, customer_phone,
+            conversation_id, garage_id, assistant_id, customer_name, customer_phone,
             customer_email, vehicle_registration, vehicle_make_model, vehicle_year,
             request_type, problem_description, preferred_date, preferred_time,
             safe_to_drive, additional_notes, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
+            garage_id=excluded.garage_id,
             customer_name=excluded.customer_name,
             customer_phone=excluded.customer_phone,
             customer_email=excluded.customer_email,
@@ -1616,7 +1705,7 @@ def telnyx_garage_booking_tool():
             updated_at=excluded.updated_at
         """,
         (
-            conversation_id, TELNYX_ASSISTANT_ID, values["customer_name"],
+            conversation_id, garage["id"], garage["telnyx_assistant_id"] or TELNYX_ASSISTANT_ID, values["customer_name"],
             values["customer_phone"], values["customer_email"],
             values["vehicle_registration"], values["vehicle_make_model"],
             values["vehicle_year"], values["request_type"],
@@ -1648,11 +1737,16 @@ def telnyx_webhooks():
         return jsonify({"error": "Invalid event envelope"}), 400
 
     assistant_id = str(payload.get("assistant_id", ""))
-    if TELNYX_ASSISTANT_ID and assistant_id and assistant_id != TELNYX_ASSISTANT_ID:
+    db = get_db()
+    garage = db.execute(
+        "SELECT * FROM garage_accounts WHERE telnyx_assistant_id=?",
+        (assistant_id,),
+    ).fetchone() if assistant_id else None
+    if not garage:
+        db.close()
         return jsonify({"received": True, "ignored": True})
 
     conversation_id = str(payload.get("conversation_id", "")).strip()[:160]
-    db = get_db()
     inserted = db.execute(
         "INSERT OR IGNORE INTO telnyx_events (event_id, event_type, conversation_id, received_at) "
         "VALUES (?, ?, ?, ?)",
@@ -1663,10 +1757,11 @@ def telnyx_webhooks():
         db.execute(
             """
             INSERT INTO garage_calls (
-                conversation_id, assistant_id, caller_number, called_number,
+                conversation_id, garage_id, assistant_id, caller_number, called_number,
                 call_status, call_reason, duration_seconds, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
+                garage_id=excluded.garage_id,
                 assistant_id=excluded.assistant_id,
                 caller_number=excluded.caller_number,
                 called_number=excluded.called_number,
@@ -1676,7 +1771,7 @@ def telnyx_webhooks():
                 updated_at=excluded.updated_at
             """,
             (
-                conversation_id, assistant_id, str(payload.get("from", ""))[:50],
+                conversation_id, garage["id"], assistant_id, str(payload.get("from", ""))[:50],
                 str(payload.get("to", ""))[:120], str(payload.get("reason", ""))[:80],
                 payload.get("duration_sec"), now, now,
             ),
@@ -1983,6 +2078,7 @@ def admin_dashboard():
         "brands": db.execute("SELECT COUNT(*) FROM brands").fetchone()[0],
         "messages": db.execute("SELECT COUNT(*) FROM contact_messages").fetchone()[0],
         "service_requests": db.execute("SELECT COUNT(*) FROM service_requests").fetchone()[0],
+        "garages": db.execute("SELECT COUNT(*) FROM garage_accounts").fetchone()[0],
     }
     users = db.execute(
         "SELECT id, email, display_name, plan, subscription_status, email_verified, created_at "
@@ -1998,33 +2094,164 @@ def admin_dashboard():
     service_requests = db.execute(
         "SELECT * FROM service_requests ORDER BY id DESC LIMIT 50"
     ).fetchall()
+    garages = db.execute(
+        "SELECT g.*, u.email AS user_email FROM garage_accounts g JOIN users u ON u.id=g.user_id ORDER BY g.id DESC"
+    ).fetchall()
     db.close()
     return render_template(
         "admin.html", stats=stats, users=users, events=events, messages=messages,
-        service_requests=service_requests,
+        service_requests=service_requests, garages=garages,
     )
+
+
+@app.route("/admin/garages/<int:garage_id>/connection", methods=["POST"])
+@login_required
+@admin_required
+def update_garage_connection(garage_id):
+    assistant_id = request.form.get("telnyx_assistant_id", "").strip()[:160] or None
+    status = request.form.get("status", "setup")
+    if status not in {"setup", "active", "paused", "cancelled"}:
+        abort(400)
+    db = get_db()
+    try:
+        result = db.execute(
+            "UPDATE garage_accounts SET telnyx_assistant_id=?, status=?, updated_at=? WHERE id=?",
+            (assistant_id, status, utc_now(), garage_id),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.close()
+        flash("That Telnyx assistant is already assigned to another garage.", "danger")
+        return redirect(url_for("admin_dashboard"))
+    db.close()
+    if not result.rowcount:
+        abort(404)
+    flash("Garage connection updated.", "success")
+    return redirect(url_for("admin_dashboard"))
 
 
 @app.route("/garage-dashboard")
 @login_required
-@admin_required
 def garage_dashboard():
+    user = current_user()
+    is_admin_user = bool(ADMIN_EMAIL and user["email"] == ADMIN_EMAIL)
     db = get_db()
+    garage = db.execute(
+        "SELECT * FROM garage_accounts WHERE user_id=? ORDER BY id LIMIT 1",
+        (user["id"],),
+    ).fetchone()
+    if not garage and not is_admin_user:
+        db.close()
+        abort(403)
+    garage_id = garage["id"] if garage else None
     calls = db.execute(
-        "SELECT * FROM garage_calls ORDER BY updated_at DESC LIMIT 100"
+        "SELECT * FROM garage_calls WHERE (? IS NULL OR garage_id=?) ORDER BY updated_at DESC LIMIT 100",
+        (garage_id, garage_id),
     ).fetchall()
     stats = {
-        "total_calls": db.execute("SELECT COUNT(*) FROM garage_calls").fetchone()[0],
+        "total_calls": db.execute(
+            "SELECT COUNT(*) FROM garage_calls WHERE (? IS NULL OR garage_id=?)",
+            (garage_id, garage_id),
+        ).fetchone()[0],
         "booking_requests": db.execute(
-            "SELECT COUNT(*) FROM garage_calls WHERE request_type != ''"
+            "SELECT COUNT(*) FROM garage_calls WHERE request_type != '' AND (? IS NULL OR garage_id=?)",
+            (garage_id, garage_id),
         ).fetchone()[0],
         "needs_follow_up": db.execute(
             "SELECT COUNT(*) FROM garage_calls WHERE customer_phone != '' "
-            "AND call_status != 'resolved'"
+            "AND call_status != 'resolved' AND (? IS NULL OR garage_id=?)",
+            (garage_id, garage_id),
         ).fetchone()[0],
     }
     db.close()
-    return render_template("garage_dashboard.html", calls=calls, stats=stats)
+    return render_template("garage_dashboard.html", calls=calls, stats=stats, garage=garage)
+
+
+@app.route("/garage-settings", methods=["GET", "POST"])
+@login_required
+def garage_settings():
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    if request.method == "POST":
+        fields = {
+            "business_name": 120, "contact_name": 120, "contact_phone": 50,
+            "business_line": 80, "opening_hours": 1000, "services_offered": 2000,
+            "booking_rules": 2000, "escalation_rules": 2000,
+        }
+        values = {name: request.form.get(name, "").strip()[:limit] for name, limit in fields.items()}
+        db = get_db()
+        db.execute(
+            "UPDATE garage_accounts SET business_name=?, contact_name=?, contact_phone=?, business_line=?, "
+            "opening_hours=?, services_offered=?, booking_rules=?, escalation_rules=?, updated_at=? WHERE id=? AND user_id=?",
+            (*values.values(), utc_now(), garage["id"], session["user_id"]),
+        )
+        db.commit()
+        db.close()
+        flash("Garage settings updated.", "success")
+        return redirect(url_for("garage_settings"))
+    return render_template("garage_settings.html", garage=garage)
+
+
+@app.route("/garage-calls/<int:call_id>/status", methods=["POST"])
+@login_required
+def update_garage_call_status(call_id):
+    status = request.form.get("status", "")
+    if status not in {"details_collected", "contacted", "booked", "resolved"}:
+        abort(400)
+    user = current_user()
+    garage = current_garage()
+    is_admin_user = bool(ADMIN_EMAIL and user["email"] == ADMIN_EMAIL)
+    if not garage and not is_admin_user:
+        abort(403)
+    db = get_db()
+    if is_admin_user and not garage:
+        result = db.execute("UPDATE garage_calls SET call_status=?, updated_at=? WHERE id=?", (status, utc_now(), call_id))
+    else:
+        result = db.execute(
+            "UPDATE garage_calls SET call_status=?, updated_at=? WHERE id=? AND garage_id=?",
+            (status, utc_now(), call_id, garage["id"]),
+        )
+    db.commit()
+    db.close()
+    if not result.rowcount:
+        abort(404)
+    flash("Call status updated.", "success")
+    return redirect(url_for("garage_dashboard"))
+
+
+@app.route("/admin/service-requests/<int:request_id>/approve", methods=["POST"])
+@login_required
+@admin_required
+def approve_service_request(request_id):
+    db = get_db()
+    setup_request = db.execute(
+        "SELECT * FROM service_requests WHERE id=? AND service_slug='garage-ai-receptionist'",
+        (request_id,),
+    ).fetchone()
+    if not setup_request:
+        db.close()
+        abort(404)
+    if not setup_request["user_id"]:
+        db.close()
+        flash("This customer must create an account using the same email before approval.", "warning")
+        return redirect(url_for("admin_dashboard"))
+    assistant_id = request.form.get("telnyx_assistant_id", "").strip()[:160] or None
+    now = utc_now()
+    db.execute(
+        "INSERT INTO garage_accounts (user_id, service_request_id, business_name, contact_name, contact_email, "
+        "contact_phone, business_line, telnyx_assistant_id, webhook_key, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'setup', ?, ?) "
+        "ON CONFLICT(user_id) DO NOTHING",
+        (setup_request["user_id"], request_id, setup_request["business_name"], setup_request["contact_name"],
+         setup_request["email"], setup_request["phone"], setup_request["contact_line"], assistant_id,
+         secrets.token_urlsafe(24), now, now),
+    )
+    db.execute("UPDATE service_requests SET status='approved' WHERE id=?", (request_id,))
+    db.commit()
+    db.close()
+    flash("Garage workspace approved and created.", "success")
+    return redirect(url_for("admin_dashboard"))
 
 
 @app.route("/upgrade-demo", methods=["POST"])

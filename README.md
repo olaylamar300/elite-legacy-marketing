@@ -26,6 +26,8 @@ Elite Legacy Marketing is a Flask SaaS platform for creators, businesses, freela
 - Admin user, subscription and usage analytics
 - Signed Telnyx call-event and garage-booking webhooks
 - Garage call and booking-request dashboard
+- Multi-garage workspaces with isolated calls and customer records
+- Garage onboarding approval, configuration and connection management
 
 ## AI generation
 
@@ -89,6 +91,8 @@ https://wwwelite-legacy-marketing.com/telnyx/tools/garage-booking
 ```
 
 Both endpoints require Telnyx's Ed25519 signature headers. Webhook tools are correlated using Telnyx's automatic `x-telnyx-call-control-id` header, while the body contains the customer, vehicle, request, preferred-time and safety fields documented in the application tests.
+
+Each approved garage receives a unique booking webhook URL from the admin dashboard. Use that URL only for the matching garage's Telnyx assistant. The Garage AI Receptionist is advertised at £400 per month; create a matching recurring price with the approved payment provider before enabling checkout.
 
 ## Run on a MacBook
 
