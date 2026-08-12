@@ -147,6 +147,21 @@ class PlatformFeatureTests(unittest.TestCase):
             },
         )
 
+    def telnyx_tool_post(self, payload, private_key, call_control_id):
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        timestamp = str(int(time.time()))
+        signature = private_key.sign(timestamp.encode() + b"|" + raw)
+        return self.client.post(
+            "/telnyx/tools/garage-booking",
+            data=raw,
+            content_type="application/json",
+            headers={
+                "telnyx-timestamp": timestamp,
+                "telnyx-signature-ed25519": base64.b64encode(signature).decode(),
+                "x-telnyx-call-control-id": call_control_id,
+            },
+        )
+
     def test_signed_telnyx_booking_and_call_event_reach_garage_dashboard(self):
         private_key = Ed25519PrivateKey.generate()
         public_key = base64.b64encode(private_key.public_key().public_bytes(
@@ -201,6 +216,27 @@ class PlatformFeatureTests(unittest.TestCase):
             "/telnyx/tools/garage-booking", json={"conversation_id": "fake"}
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_telnyx_booking_uses_automatic_call_control_header(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_key = base64.b64encode(private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )).decode()
+        with patch.object(app_module, "TELNYX_PUBLIC_KEY", public_key):
+            response = self.telnyx_tool_post(
+                {"customer_name": "Jordan", "vehicle_registration": "XY12 ZZZ"},
+                private_key,
+                "v3:test-call-control-id",
+            )
+        self.assertEqual(response.status_code, 200)
+        db = app_module.get_db()
+        saved = db.execute(
+            "SELECT * FROM garage_calls WHERE conversation_id=?",
+            ("v3:test-call-control-id",),
+        ).fetchone()
+        db.close()
+        self.assertEqual(saved["customer_name"], "Jordan")
 
 
 if __name__ == "__main__":

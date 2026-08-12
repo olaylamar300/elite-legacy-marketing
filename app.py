@@ -1566,6 +1566,7 @@ def telnyx_garage_booking_tool():
     conversation_id = str(
         data.get("conversation_id")
         or data.get("telnyx_conversation_id")
+        or request.headers.get("x-telnyx-call-control-id", "")
         or request.headers.get("x-telnyx-conversation-id", "")
     ).strip()[:160]
     if not conversation_id:

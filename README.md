@@ -88,7 +88,7 @@ Configure a synchronous webhook tool that sends the final structured booking det
 https://wwwelite-legacy-marketing.com/telnyx/tools/garage-booking
 ```
 
-Both endpoints require Telnyx's Ed25519 signature headers. The booking tool should include the Telnyx conversation ID plus the customer, vehicle, request, preferred-time and safety fields documented in the application tests.
+Both endpoints require Telnyx's Ed25519 signature headers. Webhook tools are correlated using Telnyx's automatic `x-telnyx-call-control-id` header, while the body contains the customer, vehicle, request, preferred-time and safety fields documented in the application tests.
 
 ## Run on a MacBook
 
