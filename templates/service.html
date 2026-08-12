@@ -7,7 +7,11 @@
     <p>{{ service.description }}</p>
     <div class="service-price">£{{ service.price }}<span>/month</span></div>
     <div class="hero-buttons">
-        <a class="button" href="#get-started">Request setup</a>
+        {% if service_slug == 'garage-ai-receptionist' and current_user %}
+        <form method="post" action="{{ url_for('create_checkout_session') }}"><input type="hidden" name="service" value="garage-ai-receptionist"><button class="button" type="submit">Subscribe & start setup</button></form>
+        {% elif service_slug == 'garage-ai-receptionist' %}
+        <a class="button" href="{{ url_for('register') }}">Create account to subscribe</a>
+        {% else %}<a class="button" href="#get-started">Request setup</a>{% endif %}
         <a class="button ghost" href="{{ url_for('pricing') }}">Compare services</a>
     </div>
 </section>
@@ -28,9 +32,9 @@
 
 <section id="get-started" class="section service-onboarding">
     <div>
-        <span class="eyebrow">GET STARTED</span>
-        <h2>Tell us how your business works.</h2>
-        <p class="muted">Submitting this form is not a charge. Create or sign in to your account first so your approved service can be assigned to a private workspace.</p>
+        <span class="eyebrow">PRE-SALES ENQUIRY</span>
+        <h2>Need to discuss your setup first?</h2>
+        <p class="muted">Use this form if you need compatibility advice before subscribing. Paying customers receive their private workspace automatically.</p>
     </div>
     <form class="panel form-grid" method="post">
         <label>Business name<input name="business_name" required></label>

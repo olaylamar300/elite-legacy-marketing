@@ -717,7 +717,50 @@ def sync_service_subscription(db, service_slug, *, user_id=None, customer_id=Non
         "status=excluded.status, updated_at=excluded.updated_at",
         (int(user_id), service_slug, customer_id, subscription_id, status, utc_now(), utc_now()),
     )
+    if service_slug == "garage-ai-receptionist":
+        if status in {"active", "trialing", "complimentary"}:
+            ensure_garage_workspace(db, int(user_id))
+        elif status in {"canceled", "cancelled", "unpaid", "incomplete_expired"}:
+            db.execute(
+                "UPDATE garage_accounts SET status='paused', updated_at=? WHERE user_id=?",
+                (utc_now(), int(user_id)),
+            )
     return 1
+
+
+def ensure_garage_workspace(db, user_id):
+    """Provision a private garage workspace after verified subscription access."""
+    existing = db.execute(
+        "SELECT id FROM garage_accounts WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if existing:
+        return existing["id"]
+    user = db.execute(
+        "SELECT email, display_name FROM users WHERE id=?", (user_id,)
+    ).fetchone()
+    if not user:
+        return None
+    latest_request = db.execute(
+        "SELECT * FROM service_requests WHERE user_id=? AND service_slug='garage-ai-receptionist' "
+        "ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    business_name = latest_request["business_name"] if latest_request else (user["display_name"] or "My Garage")
+    contact_name = latest_request["contact_name"] if latest_request else (user["display_name"] or "")
+    contact_phone = latest_request["phone"] if latest_request else ""
+    business_line = latest_request["contact_line"] if latest_request else ""
+    request_id = latest_request["id"] if latest_request else None
+    now = utc_now()
+    cursor = db.execute(
+        "INSERT INTO garage_accounts (user_id, service_request_id, business_name, contact_name, contact_email, "
+        "contact_phone, business_line, webhook_key, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'setup', ?, ?)",
+        (user_id, request_id, business_name, contact_name, user["email"], contact_phone,
+         business_line, secrets.token_urlsafe(24), now, now),
+    )
+    if request_id:
+        db.execute("UPDATE service_requests SET status='paid' WHERE id=?", (request_id,))
+    return cursor.lastrowid
 
 
 def get_today_usage(user_id):
@@ -1300,6 +1343,7 @@ def create_checkout_session():
 @login_required
 def checkout_success():
     session_id = request.args.get("session_id")
+    redirect_endpoint = "dashboard"
 
     if not session_id:
         flash("Stripe session could not be found.", "danger")
@@ -1330,7 +1374,11 @@ def checkout_success():
                     customer_id=checkout_session.get("customer"),
                     subscription_id=subscription_id,
                 )
-                success_message = f"Payment completed. We will contact you to configure {SERVICES[service_slug]['name']}."
+                if service_slug == "garage-ai-receptionist":
+                    success_message = "Payment completed. Your private garage workspace is ready for onboarding."
+                    redirect_endpoint = "garage_settings"
+                else:
+                    success_message = f"Payment completed. We will contact you to configure {SERVICES[service_slug]['name']}."
             else:
                 subscription = stripe.Subscription.retrieve(subscription_id)
                 sync_subscription(db, subscription, user_id=session["user_id"])
@@ -1348,7 +1396,7 @@ def checkout_success():
             "warning",
         )
 
-    return redirect(url_for("dashboard"))
+    return redirect(url_for(redirect_endpoint))
 
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
@@ -2190,7 +2238,20 @@ def garage_settings():
         db.close()
         flash("Garage settings updated.", "success")
         return redirect(url_for("garage_settings"))
-    return render_template("garage_settings.html", garage=garage)
+    db = get_db()
+    subscription = db.execute(
+        "SELECT status FROM service_subscriptions WHERE user_id=? AND service_slug='garage-ai-receptionist'",
+        (session["user_id"],),
+    ).fetchone()
+    db.close()
+    readiness = {
+        "subscription": bool(subscription and subscription["status"] in {"active", "trialing", "complimentary"}),
+        "business_profile": bool(garage["business_name"] and garage["opening_hours"] and garage["services_offered"]),
+        "booking_rules": bool(garage["booking_rules"]),
+        "phone_connection": bool(garage["telnyx_assistant_id"]),
+        "activated": garage["status"] == "active",
+    }
+    return render_template("garage_settings.html", garage=garage, readiness=readiness)
 
 
 @app.route("/garage-calls/<int:call_id>/status", methods=["POST"])

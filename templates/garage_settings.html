@@ -2,6 +2,7 @@
 {% block title %}Garage settings — Elite Legacy Marketing{% endblock %}
 {% block content %}
 <div class="page-heading"><div><span class="eyebrow">GARAGE WORKSPACE</span><h1>{{ garage['business_name'] }}</h1><p class="muted">Keep this information accurate so your receptionist handles callers correctly.</p></div></div>
+<section class="section panel"><div class="section-title"><div><h2>Setup progress</h2><p class="muted">Your workspace is available now. Calls go live after the phone connection and test are completed.</p></div><span class="pill">{{ garage['status']|upper }}</span></div><div class="grid five stats-grid">{% for label, complete in readiness.items() %}<div class="stat"><span>{{ label|replace('_',' ')|title }}</span><strong>{{ '✓' if complete else '—' }}</strong></div>{% endfor %}</div></section>
 <form class="panel form-grid" method="post">
     <label>Business name<input name="business_name" value="{{ garage['business_name'] }}" required></label>
     <label>Contact name<input name="contact_name" value="{{ garage['contact_name'] }}"></label>

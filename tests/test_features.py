@@ -282,6 +282,52 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertIn(b"First Customer", response.data)
         self.assertNotIn(b"Second Customer", response.data)
 
+    def test_paid_garage_subscription_provisions_workspace_and_cancel_pauses_it(self):
+        with patch.object(app_module, "send_account_email", return_value=True):
+            self.client.post(
+                "/register",
+                data={"email": "paid-garage@example.com", "password": "password123"},
+            )
+        db = app_module.get_db()
+        user = db.execute(
+            "SELECT * FROM users WHERE email='paid-garage@example.com'"
+        ).fetchone()
+        app_module.sync_service_subscription(
+            db, "garage-ai-receptionist", user_id=user["id"],
+            customer_id="cus_garage", subscription_id="sub_garage", status="active",
+        )
+        db.commit()
+        garage = db.execute(
+            "SELECT * FROM garage_accounts WHERE user_id=?", (user["id"],)
+        ).fetchone()
+        self.assertIsNotNone(garage)
+        self.assertEqual(garage["status"], "setup")
+        first_key = garage["webhook_key"]
+        app_module.sync_service_subscription(
+            db, "garage-ai-receptionist", user_id=user["id"],
+            customer_id="cus_garage", subscription_id="sub_garage", status="active",
+        )
+        db.commit()
+        self.assertEqual(
+            db.execute("SELECT COUNT(*) FROM garage_accounts WHERE user_id=?", (user["id"],)).fetchone()[0], 1
+        )
+        self.assertEqual(
+            db.execute("SELECT webhook_key FROM garage_accounts WHERE user_id=?", (user["id"],)).fetchone()[0], first_key
+        )
+        app_module.sync_service_subscription(
+            db, "garage-ai-receptionist", user_id=user["id"], status="canceled"
+        )
+        db.commit()
+        paused = db.execute(
+            "SELECT status FROM garage_accounts WHERE user_id=?", (user["id"],)
+        ).fetchone()[0]
+        db.close()
+        self.assertEqual(paused, "paused")
+
+    def test_garage_price_is_four_hundred_pounds(self):
+        response = self.client.get("/services/garage-ai-receptionist")
+        self.assertIn(b"\xc2\xa3400", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

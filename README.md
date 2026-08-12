@@ -94,6 +94,8 @@ Both endpoints require Telnyx's Ed25519 signature headers. Webhook tools are cor
 
 Each approved garage receives a unique booking webhook URL from the admin dashboard. Use that URL only for the matching garage's Telnyx assistant. The Garage AI Receptionist is advertised at £400 per month; create a matching recurring price with the approved payment provider before enabling checkout.
 
+Verified `active`, `trialing` or complimentary Garage AI Receptionist subscriptions automatically provision one private garage workspace. Repeated payment webhooks reuse the same workspace and webhook key. Cancelled or unpaid subscriptions pause the workspace. Telephone answering is activated separately after the garage profile, Telnyx assistant and number have been configured and tested.
+
 ## Run on a MacBook
 
 ### 1. Open Terminal
