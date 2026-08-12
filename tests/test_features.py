@@ -168,6 +168,48 @@ class PlatformFeatureTests(unittest.TestCase):
         db.close()
         return user_id, garage_id
 
+    def test_paid_complete_garage_gets_one_automatic_telnyx_assistant(self):
+        user_id, garage_id = self.create_test_garage(assistant_id=None)
+        db = app_module.get_db()
+        db.execute(
+            "UPDATE garage_accounts SET opening_hours='Mon-Fri 8-5', services_offered='MOT and repairs', "
+            "booking_rules='Requests require confirmation' WHERE id=?", (garage_id,),
+        )
+        db.execute(
+            "INSERT INTO service_subscriptions (user_id, service_slug, status, created_at, updated_at) "
+            "VALUES (?, 'garage-ai-receptionist', 'active', ?, ?)",
+            (user_id, app_module.utc_now(), app_module.utc_now()),
+        )
+        db.commit()
+        db.close()
+        telnyx_response = unittest.mock.Mock()
+        telnyx_response.raise_for_status.return_value = None
+        telnyx_response.json.return_value = {"data": {"id": "assistant-automatic", "telephony_settings": {"default_texml_app_id": "texml-app-1"}}}
+        with patch.object(app_module, "TELNYX_API_KEY", "test-telnyx-key"), \
+             patch.object(app_module.requests, "post", return_value=telnyx_response) as create:
+            success, _ = app_module.provision_garage_assistant(garage_id)
+            repeated_success, _ = app_module.provision_garage_assistant(garage_id)
+        self.assertTrue(success)
+        self.assertTrue(repeated_success)
+        self.assertEqual(create.call_count, 1)
+        payload = create.call_args.kwargs["json"]
+        self.assertEqual(payload["tools"][0]["webhook"]["name"], "save_garage_booking")
+        self.assertIn("Test Garage", payload["instructions"])
+        db = app_module.get_db()
+        garage = db.execute("SELECT * FROM garage_accounts WHERE id=?", (garage_id,)).fetchone()
+        db.close()
+        self.assertEqual(garage["telnyx_assistant_id"], "assistant-automatic")
+        self.assertEqual(garage["telnyx_texml_app_id"], "texml-app-1")
+        self.assertEqual(garage["provisioning_status"], "assistant_created")
+
+    def test_unpaid_garage_is_not_provisioned(self):
+        _, garage_id = self.create_test_garage(assistant_id=None)
+        with patch.object(app_module.requests, "post") as create:
+            success, message = app_module.provision_garage_assistant(garage_id)
+        self.assertFalse(success)
+        self.assertIn("subscription", message)
+        create.assert_not_called()
+
     def telnyx_tool_post(self, payload, private_key, call_control_id):
         raw = json.dumps(payload, separators=(",", ":")).encode()
         timestamp = str(int(time.time()))

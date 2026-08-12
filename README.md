@@ -57,6 +57,7 @@ SMTP_PASSWORD=<email provider password>
 SMTP_FROM=<verified sender address>
 TELNYX_PUBLIC_KEY=<base64 Ed25519 public key from Telnyx>
 TELNYX_ASSISTANT_ID=<Elite Garage AI Receptionist assistant ID>
+TELNYX_API_KEY=<Telnyx API key used to create each paid garage's dedicated assistant>
 ```
 
 Create the Stripe webhook endpoint using the deployed site URL:
@@ -78,7 +79,7 @@ Use keys, products, prices and webhook secrets from the same Stripe mode. Test-m
 
 ## Telnyx configuration
 
-Add the two Telnyx variables above to Railway. Configure the assistant/call event destination as:
+Add the Telnyx variables above to Railway. `TELNYX_ASSISTANT_ID` keeps the original owner assistant connected; `TELNYX_API_KEY` enables automatic assistant creation after a paid garage completes its profile. Configure the assistant/call event destination as:
 
 ```text
 https://wwwelite-legacy-marketing.com/telnyx/webhooks

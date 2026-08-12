@@ -37,6 +37,7 @@ SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://wwwelite-legacy-marketing.com").rstrip("/")
 TELNYX_PUBLIC_KEY = os.environ.get("TELNYX_PUBLIC_KEY", "").strip()
 TELNYX_ASSISTANT_ID = os.environ.get("TELNYX_ASSISTANT_ID", "").strip()
+TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "").strip()
 GOCARDLESS_ACCESS_TOKEN = os.environ.get("GOCARDLESS_ACCESS_TOKEN", "").strip()
 GOCARDLESS_WEBHOOK_SECRET = os.environ.get("GOCARDLESS_WEBHOOK_SECRET", "").strip()
 GOCARDLESS_ENVIRONMENT = os.environ.get("GOCARDLESS_ENVIRONMENT", "live").strip().lower()
@@ -407,6 +408,19 @@ def init_db():
     }
     if "garage_id" not in garage_call_columns:
         db.execute("ALTER TABLE garage_calls ADD COLUMN garage_id INTEGER")
+
+    garage_account_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(garage_accounts)").fetchall()
+    }
+    for column, definition in {
+        "provisioning_status": "TEXT NOT NULL DEFAULT 'not_started'",
+        "provisioning_error": "TEXT NOT NULL DEFAULT ''",
+        "provisioned_at": "TEXT",
+        "telnyx_texml_app_id": "TEXT",
+        "telnyx_phone_number": "TEXT",
+    }.items():
+        if column not in garage_account_columns:
+            db.execute(f"ALTER TABLE garage_accounts ADD COLUMN {column} {definition}")
 
     service_subscription_columns = {
         row["name"] for row in db.execute("PRAGMA table_info(service_subscriptions)").fetchall()
@@ -854,6 +868,152 @@ def ensure_garage_workspace(db, user_id):
     if request_id:
         db.execute("UPDATE service_requests SET status='paid' WHERE id=?", (request_id,))
     return cursor.lastrowid
+
+
+def garage_profile_is_ready(garage):
+    return bool(
+        garage["business_name"]
+        and garage["opening_hours"]
+        and garage["services_offered"]
+        and garage["booking_rules"]
+    )
+
+
+def garage_assistant_instructions(garage):
+    escalation = garage["escalation_rules"] or "Take a message for the garage team to return the call."
+    return f"""You are the telephone receptionist for {garage['business_name']}.
+
+Business information:
+- Opening hours: {garage['opening_hours']}
+- Services offered: {garage['services_offered']}
+- Booking rules: {garage['booking_rules']}
+- Escalation rules: {escalation}
+
+Answer naturally and briefly. Only describe services listed above. Never invent prices, appointment availability, diagnoses, repair times, or promises. A booking is a request until the garage confirms it.
+
+For a booking or callback request, collect and confirm: customer name, phone number, vehicle registration, vehicle make/model, request type, problem description, preferred date, preferred time, whether the customer believes the vehicle is safe to drive, and any useful notes. Then call save_garage_booking exactly once. If the caller describes danger, smoke, fire, brake failure, or another unsafe condition, do not say the vehicle is safe; advise them not to drive it and to contact emergency or recovery services when appropriate. Follow the escalation rules for anything outside scope. End politely after confirming the next step."""
+
+
+def garage_booking_tool(garage):
+    string_fields = {
+        "conversation_id": "The current Telnyx conversation ID when available.",
+        "customer_name": "Customer's full name.",
+        "customer_phone": "Best callback telephone number.",
+        "customer_email": "Customer email address, if provided.",
+        "vehicle_registration": "Vehicle registration number.",
+        "vehicle_make_model": "Vehicle make and model.",
+        "vehicle_year": "Vehicle year, if known.",
+        "request_type": "Booking, callback, repair enquiry, or other request type.",
+        "problem_description": "Customer's description of the issue.",
+        "preferred_date": "Preferred appointment date.",
+        "preferred_time": "Preferred appointment time.",
+        "safe_to_drive": "Whether the customer believes the vehicle is safe to drive.",
+        "additional_notes": "Any other useful information from the call.",
+    }
+    return {
+        "type": "webhook",
+        "webhook": {
+            "name": "save_garage_booking",
+            "description": "Save a completed garage booking or callback request after confirming the details.",
+            "url": f"{PUBLIC_URL}/telnyx/tools/garage-booking/{garage['webhook_key']}",
+            "method": "POST",
+            "body_parameters": {
+                "type": "object",
+                "properties": {
+                    name: {"type": "string", "description": description}
+                    for name, description in string_fields.items()
+                },
+                "required": [
+                    "customer_name", "customer_phone", "vehicle_registration",
+                    "vehicle_make_model", "request_type", "problem_description",
+                    "preferred_date", "preferred_time", "safe_to_drive",
+                ],
+                "additionalProperties": False,
+            },
+            "async": False,
+            "timeout_ms": 5000,
+        },
+    }
+
+
+def create_telnyx_assistant(garage):
+    if not TELNYX_API_KEY:
+        raise RuntimeError("TELNYX_API_KEY is not configured")
+    payload = {
+        "name": f"{garage['business_name']} Garage Receptionist"[:128],
+        "description": f"Dedicated AI receptionist for {garage['business_name']}"[:256],
+        "instructions": garage_assistant_instructions(garage),
+        "greeting": f"Hello, you've reached {garage['business_name']}. How can I help today?"[:500],
+        "enabled_features": ["telephony"],
+        "tools": [garage_booking_tool(garage)],
+    }
+    response = requests.post(
+        "https://api.telnyx.com/v2/ai/assistants",
+        headers={"Authorization": f"Bearer {TELNYX_API_KEY}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=20,
+    )
+    response.raise_for_status()
+    body = response.json()
+    assistant = body.get("data", body)
+    assistant_id = str(assistant.get("id", "")).strip()
+    if not assistant_id:
+        raise RuntimeError("Telnyx did not return an assistant ID")
+    texml_app_id = str((assistant.get("telephony_settings") or {}).get("default_texml_app_id", "")).strip()
+    return assistant_id, texml_app_id or None
+
+
+def provision_garage_assistant(garage_id):
+    """Create one Telnyx assistant for a paid, fully configured garage."""
+    db = get_db()
+    garage = db.execute("SELECT * FROM garage_accounts WHERE id=?", (garage_id,)).fetchone()
+    if not garage:
+        db.close()
+        return False, "Garage workspace not found."
+    if garage["telnyx_assistant_id"]:
+        db.close()
+        return True, "This garage already has a Telnyx assistant."
+    subscription = db.execute(
+        "SELECT status FROM service_subscriptions WHERE user_id=? AND service_slug='garage-ai-receptionist'",
+        (garage["user_id"],),
+    ).fetchone()
+    if not subscription or subscription["status"] not in {"active", "trialing", "complimentary"}:
+        db.close()
+        return False, "A confirmed active subscription is required."
+    if not garage_profile_is_ready(garage):
+        db.close()
+        return False, "Complete the business profile, opening hours, services and booking rules first."
+    claimed = db.execute(
+        "UPDATE garage_accounts SET provisioning_status='creating', provisioning_error='', updated_at=? "
+        "WHERE id=? AND telnyx_assistant_id IS NULL AND provisioning_status != 'creating'",
+        (utc_now(), garage_id),
+    )
+    db.commit()
+    db.close()
+    if not claimed.rowcount:
+        return False, "Assistant creation is already in progress."
+    try:
+        assistant_id, texml_app_id = create_telnyx_assistant(garage)
+        db = get_db()
+        db.execute(
+            "UPDATE garage_accounts SET telnyx_assistant_id=?, telnyx_texml_app_id=?, "
+            "provisioning_status='assistant_created', provisioning_error='', provisioned_at=?, updated_at=? WHERE id=?",
+            (assistant_id, texml_app_id, utc_now(), utc_now(), garage_id),
+        )
+        db.commit()
+        db.close()
+        return True, "Your garage AI receptionist has been created."
+    except (requests.RequestException, ValueError, RuntimeError) as exc:
+        message = str(exc)[:500] or "Telnyx provisioning failed."
+        db = get_db()
+        db.execute(
+            "UPDATE garage_accounts SET provisioning_status='failed', provisioning_error=?, updated_at=? WHERE id=?",
+            (message, utc_now(), garage_id),
+        )
+        db.commit()
+        db.close()
+        app.logger.exception("Telnyx provisioning failed for garage %s", garage_id)
+        return False, "The assistant could not be created yet. An administrator can retry it."
 
 
 def get_today_usage(user_id):
@@ -1505,6 +1665,7 @@ def gocardless_webhook():
     except (TypeError, ValueError):
         return "Invalid JSON", 400
 
+    garages_to_provision = set()
     db = get_db()
     try:
         for event in events:
@@ -1532,6 +1693,11 @@ def gocardless_webhook():
                         "UPDATE gocardless_checkouts SET status='active', updated_at=? WHERE id=?",
                         (utc_now(), checkout["id"]),
                     )
+                    garage = db.execute(
+                        "SELECT id FROM garage_accounts WHERE user_id=?", (checkout["user_id"],)
+                    ).fetchone()
+                    if garage:
+                        garages_to_provision.add(garage["id"])
                 elif action in {"failed", "charged_back", "cancelled"}:
                     sync_service_subscription(
                         db, "garage-ai-receptionist", user_id=checkout["user_id"],
@@ -1558,6 +1724,9 @@ def gocardless_webhook():
         return "Webhook processing failed", 500
     finally:
         db.close()
+    # Payment acknowledgement must not depend on a third-party provisioning call.
+    for garage_id in garages_to_provision:
+        provision_garage_assistant(garage_id)
     return "", 204
 
 
@@ -2457,8 +2626,9 @@ def update_garage_connection(garage_id):
     db = get_db()
     try:
         result = db.execute(
-            "UPDATE garage_accounts SET telnyx_assistant_id=?, status=?, updated_at=? WHERE id=?",
-            (assistant_id, status, utc_now(), garage_id),
+            "UPDATE garage_accounts SET telnyx_assistant_id=?, status=?, "
+            "provisioning_status=?, provisioning_error='', updated_at=? WHERE id=?",
+            (assistant_id, status, "assistant_created" if assistant_id else "not_started", utc_now(), garage_id),
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -2530,7 +2700,12 @@ def garage_settings():
         )
         db.commit()
         db.close()
+        success, provisioning_message = provision_garage_assistant(garage["id"])
         flash("Garage settings updated.", "success")
+        if success:
+            flash(provisioning_message, "success")
+        elif "first" not in provisioning_message and "subscription" not in provisioning_message:
+            flash(provisioning_message, "warning")
         return redirect(url_for("garage_settings"))
     db = get_db()
     subscription = db.execute(
@@ -2546,6 +2721,15 @@ def garage_settings():
         "activated": garage["status"] == "active",
     }
     return render_template("garage_settings.html", garage=garage, readiness=readiness)
+
+
+@app.route("/admin/garages/<int:garage_id>/provision", methods=["POST"])
+@login_required
+@admin_required
+def retry_garage_provisioning(garage_id):
+    success, message = provision_garage_assistant(garage_id)
+    flash(message, "success" if success else "danger")
+    return redirect(url_for("admin_dashboard"))
 
 
 @app.route("/garage-calls/<int:call_id>/status", methods=["POST"])
