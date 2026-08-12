@@ -66,7 +66,7 @@
         <h2>£{{ service.price }}<span>/month</span></h2>
         <p>{{ service.description }}</p>
         <ul>{% for feature in service.features %}<li>✓ {{ feature }}</li>{% endfor %}</ul>
-        {% if slug == 'garage-ai-receptionist' and current_user %}<form method="post" action="{{ url_for('create_checkout_session') }}"><input type="hidden" name="service" value="garage-ai-receptionist"><button class="button full" type="submit">Subscribe & start setup</button></form>{% else %}<a class="button full" href="{{ url_for('service_page', service_slug=slug) }}">View service</a>{% endif %}
+        {% if slug == 'garage-ai-receptionist' and current_user %}<form method="post" action="{{ url_for('create_gocardless_checkout') }}"><button class="button full" type="submit">Subscribe by Direct Debit</button></form>{% else %}<a class="button full" href="{{ url_for('service_page', service_slug=slug) }}">View service</a>{% endif %}
     </article>
 {% endfor %}
 </div>

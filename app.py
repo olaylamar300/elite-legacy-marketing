@@ -12,6 +12,7 @@ from email.message import EmailMessage
 from dotenv import load_dotenv
 from openai import OpenAI
 import random
+import requests
 import secrets
 import sqlite3
 from datetime import date, datetime, timezone
@@ -38,6 +39,14 @@ SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://wwwelite-legacy-marketing.com").rstrip("/")
 TELNYX_PUBLIC_KEY = os.environ.get("TELNYX_PUBLIC_KEY", "").strip()
 TELNYX_ASSISTANT_ID = os.environ.get("TELNYX_ASSISTANT_ID", "").strip()
+GOCARDLESS_ACCESS_TOKEN = os.environ.get("GOCARDLESS_ACCESS_TOKEN", "").strip()
+GOCARDLESS_WEBHOOK_SECRET = os.environ.get("GOCARDLESS_WEBHOOK_SECRET", "").strip()
+GOCARDLESS_ENVIRONMENT = os.environ.get("GOCARDLESS_ENVIRONMENT", "live").strip().lower()
+GOCARDLESS_API_URL = (
+    "https://api-sandbox.gocardless.com"
+    if GOCARDLESS_ENVIRONMENT == "sandbox"
+    else "https://api.gocardless.com"
+)
 client = None
 
 app = Flask(__name__)
@@ -315,6 +324,28 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS gocardless_checkouts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            checkout_token TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            billing_request_id TEXT UNIQUE NOT NULL,
+            billing_request_flow_id TEXT,
+            customer_id TEXT,
+            mandate_id TEXT,
+            subscription_id TEXT UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending_authorisation',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS gocardless_events (
+            event_id TEXT PRIMARY KEY,
+            resource_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            processed_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS telnyx_events (
             event_id TEXT PRIMARY KEY,
             event_type TEXT NOT NULL,
@@ -404,6 +435,22 @@ def init_db():
     }
     if "garage_id" not in garage_call_columns:
         db.execute("ALTER TABLE garage_calls ADD COLUMN garage_id INTEGER")
+
+    service_subscription_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(service_subscriptions)").fetchall()
+    }
+    for column, definition in {
+        "provider": "TEXT NOT NULL DEFAULT 'stripe'",
+        "provider_customer_id": "TEXT",
+        "provider_subscription_id": "TEXT",
+    }.items():
+        if column not in service_subscription_columns:
+            db.execute(f"ALTER TABLE service_subscriptions ADD COLUMN {column} {definition}")
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS service_provider_subscription_idx "
+        "ON service_subscriptions(provider_subscription_id) "
+        "WHERE provider_subscription_id IS NOT NULL"
+    )
 
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS users_stripe_customer_idx "
@@ -704,9 +751,11 @@ def sync_subscription(db, subscription, user_id=None):
 
 
 def sync_service_subscription(db, service_slug, *, user_id=None, customer_id=None,
-                              subscription_id=None, status="active"):
+                              subscription_id=None, status="active", provider="stripe"):
     if service_slug not in SERVICES or not user_id:
         return 0
+    stripe_customer_id = customer_id if provider == "stripe" else None
+    stripe_subscription_id = subscription_id if provider == "stripe" else None
     db.execute(
         "INSERT INTO service_subscriptions "
         "(user_id, service_slug, stripe_customer_id, stripe_subscription_id, status, created_at, updated_at) "
@@ -715,7 +764,12 @@ def sync_service_subscription(db, service_slug, *, user_id=None, customer_id=Non
         "stripe_customer_id=excluded.stripe_customer_id, "
         "stripe_subscription_id=excluded.stripe_subscription_id, "
         "status=excluded.status, updated_at=excluded.updated_at",
-        (int(user_id), service_slug, customer_id, subscription_id, status, utc_now(), utc_now()),
+        (int(user_id), service_slug, stripe_customer_id, stripe_subscription_id, status, utc_now(), utc_now()),
+    )
+    db.execute(
+        "UPDATE service_subscriptions SET provider=?, provider_customer_id=?, "
+        "provider_subscription_id=?, updated_at=? WHERE user_id=? AND service_slug=?",
+        (provider, customer_id, subscription_id, utc_now(), int(user_id), service_slug),
     )
     if service_slug == "garage-ai-receptionist":
         if status in {"active", "trialing", "complimentary"}:
@@ -726,6 +780,73 @@ def sync_service_subscription(db, service_slug, *, user_id=None, customer_id=Non
                 (utc_now(), int(user_id)),
             )
     return 1
+
+
+def gocardless_request(method, path, payload=None, *, idempotency_key=None):
+    """Call the GoCardless API using its pinned compatibility version."""
+    if not GOCARDLESS_ACCESS_TOKEN:
+        raise RuntimeError("GOCARDLESS_ACCESS_TOKEN is not configured")
+    headers = {
+        "Authorization": f"Bearer {GOCARDLESS_ACCESS_TOKEN}",
+        "GoCardless-Version": "2015-07-06",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    response = requests.request(
+        method,
+        f"{GOCARDLESS_API_URL}{path}",
+        headers=headers,
+        json=payload,
+        timeout=15,
+    )
+    if not response.ok:
+        app.logger.error("GoCardless API error %s: %s", response.status_code, response.text[:1000])
+        response.raise_for_status()
+    return response.json()
+
+
+def create_gocardless_subscription(db, checkout, billing_request):
+    """Create the £400 Bacs subscription exactly once after mandate fulfilment."""
+    if checkout["subscription_id"]:
+        return checkout["subscription_id"]
+    links = billing_request.get("links") or {}
+    mandate_id = links.get("mandate_request_mandate")
+    if billing_request.get("status") != "fulfilled" or not mandate_id:
+        return None
+    payload = {
+        "subscriptions": {
+            "amount": 40000,
+            "currency": "GBP",
+            "name": "Garage AI Receptionist",
+            "interval": 1,
+            "interval_unit": "monthly",
+            "metadata": {
+                "user_id": str(checkout["user_id"]),
+                "service": "garage-ai-receptionist",
+            },
+            "links": {"mandate": mandate_id},
+        }
+    }
+    result = gocardless_request(
+        "POST", "/subscriptions", payload,
+        idempotency_key=f"garage-subscription-{checkout['billing_request_id']}",
+    )["subscriptions"]
+    subscription_id = result["id"]
+    customer_id = links.get("customer")
+    db.execute(
+        "UPDATE gocardless_checkouts SET customer_id=?, mandate_id=?, subscription_id=?, "
+        "status='pending_payment', updated_at=? WHERE id=?",
+        (customer_id, mandate_id, subscription_id, utc_now(), checkout["id"]),
+    )
+    ensure_garage_workspace(db, int(checkout["user_id"]))
+    sync_service_subscription(
+        db, "garage-ai-receptionist", user_id=checkout["user_id"],
+        customer_id=customer_id, subscription_id=subscription_id,
+        status="pending_payment", provider="gocardless",
+    )
+    return subscription_id
 
 
 def ensure_garage_workspace(db, user_id):
@@ -1267,6 +1388,205 @@ def content_calendar():
         "content_calendar.html",
         ideas=[]
     )
+@app.route("/gocardless/checkout", methods=["POST"])
+@login_required
+def create_gocardless_checkout():
+    user = current_user()
+    if not GOCARDLESS_ACCESS_TOKEN:
+        app.logger.error("GOCARDLESS_ACCESS_TOKEN is missing")
+        flash("Direct Debit checkout is temporarily unavailable. Please try again shortly.", "danger")
+        return redirect(url_for("service_page", service_slug="garage-ai-receptionist"))
+
+    checkout_token = secrets.token_urlsafe(24)
+    try:
+        billing_request = gocardless_request(
+            "POST",
+            "/billing_requests",
+            {
+                "billing_requests": {
+                    "mandate_request": {
+                        "currency": "GBP",
+                        "scheme": "bacs",
+                        "description": "Garage AI Receptionist monthly subscription",
+                    },
+                    "metadata": {
+                        "user_id": str(user["id"]),
+                        "service": "garage-ai-receptionist",
+                    },
+                }
+            },
+            idempotency_key=f"garage-mandate-{checkout_token}",
+        )["billing_requests"]
+        billing_request_id = billing_request["id"]
+        redirect_uri = url_for(
+            "gocardless_checkout_success", checkout=checkout_token, _external=True
+        )
+        flow = gocardless_request(
+            "POST",
+            "/billing_request_flows",
+            {
+                "billing_request_flows": {
+                    "redirect_uri": redirect_uri,
+                    "exit_uri": url_for(
+                        "service_page", service_slug="garage-ai-receptionist", _external=True
+                    ),
+                    "prefilled_customer": {"email": user["email"]},
+                    "links": {"billing_request": billing_request_id},
+                }
+            },
+            idempotency_key=f"garage-flow-{checkout_token}",
+        )["billing_request_flows"]
+        db = get_db()
+        now = utc_now()
+        db.execute(
+            "INSERT INTO gocardless_checkouts "
+            "(checkout_token, user_id, billing_request_id, billing_request_flow_id, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'pending_authorisation', ?, ?)",
+            (checkout_token, user["id"], billing_request_id, flow.get("id"), now, now),
+        )
+        db.commit()
+        db.close()
+        return redirect(flow["authorisation_url"], code=303)
+    except Exception as error:
+        app.logger.exception("GoCardless checkout failed: %s", error)
+        flash("Direct Debit checkout could not be opened. Please try again.", "danger")
+        return redirect(url_for("service_page", service_slug="garage-ai-receptionist"))
+
+
+@app.route("/gocardless/success")
+@login_required
+def gocardless_checkout_success():
+    checkout_token = request.args.get("checkout", "")
+    db = get_db()
+    checkout = db.execute(
+        "SELECT * FROM gocardless_checkouts WHERE checkout_token=? AND user_id=?",
+        (checkout_token, session["user_id"]),
+    ).fetchone()
+    if not checkout:
+        db.close()
+        flash("That Direct Debit setup could not be verified.", "danger")
+        return redirect(url_for("pricing"))
+    try:
+        billing_request = gocardless_request(
+            "GET", f"/billing_requests/{checkout['billing_request_id']}"
+        )["billing_requests"]
+        subscription_id = create_gocardless_subscription(db, checkout, billing_request)
+        db.commit()
+        if subscription_id:
+            flash(
+                "Direct Debit authorised. Your garage setup workspace is ready; service activates when the first payment is confirmed.",
+                "success",
+            )
+            return redirect(url_for("garage_settings"))
+        flash("Your Direct Debit authorisation is still processing. We will activate it automatically.", "warning")
+    except Exception as error:
+        db.rollback()
+        app.logger.exception("Unable to complete GoCardless checkout: %s", error)
+        flash("Your authorisation is processing. Your account will update automatically.", "warning")
+    finally:
+        db.close()
+    return redirect(url_for("service_page", service_slug="garage-ai-receptionist"))
+
+
+def gocardless_checkout_for_event(db, event):
+    links = event.get("links") or {}
+    resource_type = event.get("resource_type")
+    if resource_type == "billing_requests" and links.get("billing_request"):
+        return db.execute(
+            "SELECT * FROM gocardless_checkouts WHERE billing_request_id=?",
+            (links["billing_request"],),
+        ).fetchone()
+    subscription_id = links.get("subscription")
+    if resource_type == "payments" and links.get("payment") and not subscription_id:
+        payment = gocardless_request("GET", f"/payments/{links['payment']}")["payments"]
+        subscription_id = (payment.get("links") or {}).get("subscription")
+    if subscription_id:
+        return db.execute(
+            "SELECT * FROM gocardless_checkouts WHERE subscription_id=?",
+            (subscription_id,),
+        ).fetchone()
+    mandate_id = links.get("mandate")
+    if mandate_id:
+        return db.execute(
+            "SELECT * FROM gocardless_checkouts WHERE mandate_id=?",
+            (mandate_id,),
+        ).fetchone()
+    return None
+
+
+@app.route("/gocardless/webhook", methods=["POST"])
+def gocardless_webhook():
+    payload = request.get_data()
+    signature = request.headers.get("Webhook-Signature", "")
+    if not GOCARDLESS_WEBHOOK_SECRET:
+        app.logger.error("GOCARDLESS_WEBHOOK_SECRET is missing")
+        return "Webhook is not configured", 503
+    expected = hmac.new(
+        GOCARDLESS_WEBHOOK_SECRET.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return "Invalid signature", 498
+    try:
+        events = json.loads(payload).get("events", [])
+    except (TypeError, ValueError):
+        return "Invalid JSON", 400
+
+    db = get_db()
+    try:
+        for event in events:
+            event_id = event.get("id")
+            if not event_id or db.execute(
+                "SELECT 1 FROM gocardless_events WHERE event_id=?", (event_id,)
+            ).fetchone():
+                continue
+            checkout = gocardless_checkout_for_event(db, event)
+            action = event.get("action", "")
+            resource_type = event.get("resource_type", "")
+            if checkout and resource_type == "billing_requests" and action == "fulfilled":
+                billing_request = gocardless_request(
+                    "GET", f"/billing_requests/{checkout['billing_request_id']}"
+                )["billing_requests"]
+                create_gocardless_subscription(db, checkout, billing_request)
+            elif checkout and resource_type == "payments":
+                if action in {"confirmed", "paid_out"}:
+                    sync_service_subscription(
+                        db, "garage-ai-receptionist", user_id=checkout["user_id"],
+                        customer_id=checkout["customer_id"], subscription_id=checkout["subscription_id"],
+                        status="active", provider="gocardless",
+                    )
+                    db.execute(
+                        "UPDATE gocardless_checkouts SET status='active', updated_at=? WHERE id=?",
+                        (utc_now(), checkout["id"]),
+                    )
+                elif action in {"failed", "charged_back", "cancelled"}:
+                    sync_service_subscription(
+                        db, "garage-ai-receptionist", user_id=checkout["user_id"],
+                        customer_id=checkout["customer_id"], subscription_id=checkout["subscription_id"],
+                        status="unpaid", provider="gocardless",
+                    )
+            elif checkout and (
+                (resource_type == "subscriptions" and action in {"cancelled", "paused"})
+                or (resource_type == "mandates" and action in {"cancelled", "expired", "failed"})
+            ):
+                sync_service_subscription(
+                    db, "garage-ai-receptionist", user_id=checkout["user_id"],
+                    customer_id=checkout["customer_id"], subscription_id=checkout["subscription_id"],
+                    status="cancelled", provider="gocardless",
+                )
+            db.execute(
+                "INSERT INTO gocardless_events (event_id, resource_type, action, processed_at) VALUES (?, ?, ?, ?)",
+                (event_id, resource_type, action, utc_now()),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        app.logger.exception("GoCardless webhook processing failed")
+        return "Webhook processing failed", 500
+    finally:
+        db.close()
+    return "", 204
+
+
 @app.route("/create-checkout-session", methods=["POST"])
 @login_required
 def create_checkout_session():

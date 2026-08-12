@@ -8,7 +8,7 @@
     <div class="service-price">£{{ service.price }}<span>/month</span></div>
     <div class="hero-buttons">
         {% if service_slug == 'garage-ai-receptionist' and current_user %}
-        <form method="post" action="{{ url_for('create_checkout_session') }}"><input type="hidden" name="service" value="garage-ai-receptionist"><button class="button" type="submit">Subscribe & start setup</button></form>
+        <form method="post" action="{{ url_for('create_gocardless_checkout') }}"><button class="button" type="submit">Subscribe by Direct Debit</button></form>
         {% elif service_slug == 'garage-ai-receptionist' %}
         <a class="button" href="{{ url_for('register') }}">Create account to subscribe</a>
         {% else %}<a class="button" href="#get-started">Request setup</a>{% endif %}

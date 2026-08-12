@@ -94,6 +94,22 @@ Both endpoints require Telnyx's Ed25519 signature headers. Webhook tools are cor
 
 Each approved garage receives a unique booking webhook URL from the admin dashboard. Use that URL only for the matching garage's Telnyx assistant. The Garage AI Receptionist is advertised at £400 per month; create a matching recurring price with the approved payment provider before enabling checkout.
 
+Garage subscriptions use GoCardless Bacs Direct Debit. Configure these Railway variables:
+
+```text
+GOCARDLESS_ACCESS_TOKEN=<live access token>
+GOCARDLESS_WEBHOOK_SECRET=<secret generated when creating the webhook endpoint>
+GOCARDLESS_ENVIRONMENT=live
+```
+
+Create the GoCardless webhook endpoint after deployment using:
+
+```text
+https://wwwelite-legacy-marketing.com/gocardless/webhook
+```
+
+The app creates the Bacs mandate through GoCardless hosted payment pages, then creates a £400 monthly subscription. The private setup workspace is provisioned after mandate authorisation, while service activation waits for a signed `payments.confirmed` webhook.
+
 Verified `active`, `trialing` or complimentary Garage AI Receptionist subscriptions automatically provision one private garage workspace. Repeated payment webhooks reuse the same workspace and webhook key. Cancelled or unpaid subscriptions pause the workspace. Telephone answering is activated separately after the garage profile, Telnyx assistant and number have been configured and tested.
 
 ## Run on a MacBook
