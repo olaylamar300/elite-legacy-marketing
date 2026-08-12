@@ -47,11 +47,13 @@ class PlatformFeatureTests(unittest.TestCase):
     def test_public_and_logged_in_pages_render(self):
         for path in [
             "/", "/pricing", "/terms", "/privacy", "/refund-policy", "/contact",
-            "/services/ai-phone-receptionist",
             "/services/garage-ai-receptionist",
-            "/services/review-automation",
         ]:
             self.assertEqual(self.client.get(path).status_code, 200, path)
+        for removed_path in [
+            "/services/ai-phone-receptionist", "/services/review-automation"
+        ]:
+            self.assertEqual(self.client.get(removed_path).status_code, 404, removed_path)
         self.register()
         for path in ["/dashboard", "/account", "/brands", "/tools", "/library", "/generate"]:
             self.assertEqual(self.client.get(path).status_code, 200, path)
@@ -129,7 +131,8 @@ class PlatformFeatureTests(unittest.TestCase):
         ).fetchall()
         db.close()
         self.assertEqual(user["plan"], "pro")
-        self.assertEqual(len(services), 3)
+        self.assertEqual(len(services), 1)
+        self.assertEqual(services[0]["service_slug"], "garage-ai-receptionist")
         self.assertTrue(all(row["status"] == "complimentary" for row in services))
         with patch.object(app_module, "ADMIN_CLAIM_TOKEN_HASH", token_hash):
             self.assertEqual(self.client.get(f"/claim-admin/{token}").status_code, 410)

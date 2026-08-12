@@ -28,9 +28,7 @@ load_dotenv()
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 STRIPE_SERVICE_PRICE_IDS = {
-    "ai-phone-receptionist": os.environ.get("STRIPE_PHONE_RECEPTIONIST_PRICE_ID"),
     "garage-ai-receptionist": os.environ.get("STRIPE_GARAGE_RECEPTIONIST_PRICE_ID"),
-    "review-automation": os.environ.get("STRIPE_REVIEW_AUTOMATION_PRICE_ID"),
 }
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "olaylamarbusiness@gmail.com").strip().lower()
@@ -59,19 +57,6 @@ DATABASE = os.environ.get(
 FREE_DAILY_LIMIT = 10
 
 SERVICES = {
-    "ai-phone-receptionist": {
-        "name": "AI Phone Receptionist",
-        "price": 80,
-        "eyebrow": "NEVER MISS A BUSINESS CALL",
-        "headline": "A professional first response, even when your team is busy.",
-        "description": "An AI phone receptionist configured around your business, services and call-handling rules.",
-        "features": [
-            "24/7 call answering", "Natural AI conversation", "Business knowledge",
-            "Caller identification", "Intent detection", "Appointment booking",
-            "Rescheduling and cancellations", "SMS confirmations", "Appointment reminders",
-            "Take a message", "Call summaries", "Business dashboard",
-        ],
-    },
     "garage-ai-receptionist": {
         "name": "Garage AI Receptionist",
         "price": 400,
@@ -82,19 +67,6 @@ SERVICES = {
             "Garage bookings", "AI customer service", "WhatsApp messaging",
             "Vehicle information collection", "Automatic reminders",
             "Repair status messages", "Missed-call recovery", "Garage dashboard",
-        ],
-    },
-    "review-automation": {
-        "name": "Review Automation",
-        "price": 10,
-        "eyebrow": "BUILD TRUST ON AUTOPILOT",
-        "headline": "Turn completed jobs into a steady flow of customer reviews.",
-        "description": "Automated, brand-friendly review requests with a simple follow-up journey for customers.",
-        "features": [
-            "Automatic review requests", "SMS requests", "Email requests",
-            "WhatsApp integration", "Direct review links", "QR codes",
-            "Custom messages", "Scheduled delays", "Automatic follow-ups",
-            "Customer database", "Do-not-contact controls", "Review dashboard",
         ],
     },
 }
