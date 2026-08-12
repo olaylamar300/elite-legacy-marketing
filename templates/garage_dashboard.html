@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Garage calls — Elite Legacy Marketing{% endblock %}
+{% block content %}
+<div class="page-heading">
+    <div><span class="eyebrow">GARAGE RECEPTIONIST</span><h1>Calls and booking requests</h1><p class="muted">Information collected by your Telnyx AI receptionist.</p></div>
+</div>
+<div class="grid three stats-grid">
+    {% for label, value in stats.items() %}<div class="stat"><span>{{ label|replace('_', ' ')|title }}</span><strong>{{ value }}</strong></div>{% endfor %}
+</div>
+<section class="section">
+    {% if calls %}
+    <div class="table-wrap"><table>
+        <thead><tr><th>Customer</th><th>Vehicle</th><th>Request</th><th>Preferred time</th><th>Safety</th><th>Call</th></tr></thead>
+        <tbody>{% for call in calls %}<tr>
+            <td><strong>{{ call['customer_name'] or 'Not collected' }}</strong><br><small>{{ call['customer_phone'] or call['caller_number'] or 'No number' }}</small></td>
+            <td>{{ call['vehicle_registration'] or '—' }}<br><small>{{ call['vehicle_make_model'] or '' }} {{ call['vehicle_year'] or '' }}</small></td>
+            <td>{{ call['request_type'] or 'General call' }}<br><small>{{ call['problem_description'] or call['additional_notes'] or '' }}</small></td>
+            <td>{{ call['preferred_date'] or '—' }} {{ call['preferred_time'] or '' }}</td>
+            <td>{{ call['safe_to_drive'] or 'Not stated' }}</td>
+            <td>{{ call['call_status']|replace('_', ' ')|title }}<br><small>{% if call['duration_seconds'] is not none %}{{ call['duration_seconds'] }} seconds{% endif %}</small></td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<div class="empty"><h3>No calls recorded yet</h3><p>Calls will appear after the Telnyx webhook and booking tool are connected.</p></div>{% endif %}
+</section>
+{% endblock %}

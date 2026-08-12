@@ -1,8 +1,14 @@
 import os
 import hashlib
+import base64
+import json
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("SECRET_KEY", "test-secret")
@@ -126,6 +132,75 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "complimentary" for row in services))
         with patch.object(app_module, "ADMIN_CLAIM_TOKEN_HASH", token_hash):
             self.assertEqual(self.client.get(f"/claim-admin/{token}").status_code, 410)
+
+    def telnyx_post(self, path, payload, private_key):
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        timestamp = str(int(time.time()))
+        signature = private_key.sign(timestamp.encode() + b"|" + raw)
+        return self.client.post(
+            path,
+            data=raw,
+            content_type="application/json",
+            headers={
+                "telnyx-timestamp": timestamp,
+                "telnyx-signature-ed25519": base64.b64encode(signature).decode(),
+            },
+        )
+
+    def test_signed_telnyx_booking_and_call_event_reach_garage_dashboard(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_key = base64.b64encode(private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )).decode()
+        booking = {
+            "conversation_id": "conversation-test-1",
+            "customer_name": "Alex Driver",
+            "customer_phone": "07123456789",
+            "vehicle_registration": "AB12 CDE",
+            "vehicle_make_model": "BMW 3 Series",
+            "request_type": "Diagnostic booking",
+            "problem_description": "Engine warning light",
+            "preferred_date": "2026-08-14",
+            "preferred_time": "morning",
+            "safe_to_drive": "unknown",
+        }
+        ended = {"data": {
+            "id": "event-test-1",
+            "event_type": "call.conversation.ended",
+            "payload": {
+                "assistant_id": "assistant-test",
+                "conversation_id": "conversation-test-1",
+                "from": "+447123456789",
+                "to": "+442079460123",
+                "duration_sec": 95,
+                "reason": "customer_disconnect",
+            },
+        }}
+        with patch.object(app_module, "TELNYX_PUBLIC_KEY", public_key), \
+             patch.object(app_module, "TELNYX_ASSISTANT_ID", "assistant-test"):
+            self.assertEqual(self.telnyx_post(
+                "/telnyx/tools/garage-booking", booking, private_key
+            ).status_code, 200)
+            self.assertEqual(self.telnyx_post(
+                "/telnyx/webhooks", ended, private_key
+            ).status_code, 200)
+            duplicate = self.telnyx_post("/telnyx/webhooks", ended, private_key)
+            self.assertTrue(duplicate.get_json()["duplicate"])
+
+        db = app_module.get_db()
+        saved = db.execute(
+            "SELECT * FROM garage_calls WHERE conversation_id='conversation-test-1'"
+        ).fetchone()
+        db.close()
+        self.assertEqual(saved["vehicle_registration"], "AB12 CDE")
+        self.assertEqual(saved["duration_seconds"], 95)
+
+    def test_telnyx_rejects_unsigned_requests(self):
+        response = self.client.post(
+            "/telnyx/tools/garage-booking", json={"conversation_id": "fake"}
+        )
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

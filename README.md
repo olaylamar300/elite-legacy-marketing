@@ -24,6 +24,8 @@ Elite Legacy Marketing is a Flask SaaS platform for creators, businesses, freela
 - AI rewrite, hashtag and campaign strategy tools
 - Terms, privacy, refund and contact pages
 - Admin user, subscription and usage analytics
+- Signed Telnyx call-event and garage-booking webhooks
+- Garage call and booking-request dashboard
 
 ## AI generation
 
@@ -51,6 +53,8 @@ SMTP_PORT=587
 SMTP_USERNAME=<email provider username>
 SMTP_PASSWORD=<email provider password>
 SMTP_FROM=<verified sender address>
+TELNYX_PUBLIC_KEY=<base64 Ed25519 public key from Telnyx>
+TELNYX_ASSISTANT_ID=<Elite Garage AI Receptionist assistant ID>
 ```
 
 Create the Stripe webhook endpoint using the deployed site URL:
@@ -69,6 +73,22 @@ Subscribe that endpoint to:
 - `customer.subscription.deleted`
 
 Use keys, products, prices and webhook secrets from the same Stripe mode. Test-mode and live-mode values cannot be mixed. Configure Stripe's Customer Portal so Pro customers can update their payment method, view invoices and cancel their subscription.
+
+## Telnyx configuration
+
+Add the two Telnyx variables above to Railway. Configure the assistant/call event destination as:
+
+```text
+https://wwwelite-legacy-marketing.com/telnyx/webhooks
+```
+
+Configure a synchronous webhook tool that sends the final structured booking details to:
+
+```text
+https://wwwelite-legacy-marketing.com/telnyx/tools/garage-booking
+```
+
+Both endpoints require Telnyx's Ed25519 signature headers. The booking tool should include the Telnyx conversation ID plus the customer, vehicle, request, preferred-time and safety fields documented in the application tests.
 
 ## Run on a MacBook
 

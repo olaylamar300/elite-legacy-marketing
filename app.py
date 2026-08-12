@@ -1,9 +1,12 @@
 import csv
+import base64
 import hashlib
 import hmac
 import io
+import json
 import os
 import smtplib
+import time
 import stripe
 from email.message import EmailMessage
 from dotenv import load_dotenv
@@ -13,7 +16,9 @@ import sqlite3
 from datetime import date, datetime, timezone
 from functools import wraps
 
-from flask import Flask, abort, flash, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -30,6 +35,8 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "olaylamarbusiness@gmail.com").strip
 ADMIN_CLAIM_TOKEN_HASH = "2b0a27d0095482b957763e0aecf6c6af5d5e88b6c4991ec3ab90857d6694283e"
 SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://wwwelite-legacy-marketing.com").rstrip("/")
+TELNYX_PUBLIC_KEY = os.environ.get("TELNYX_PUBLIC_KEY", "").strip()
+TELNYX_ASSISTANT_ID = os.environ.get("TELNYX_ASSISTANT_ID", "").strip()
 client = None
 
 app = Flask(__name__)
@@ -306,6 +313,38 @@ def init_db():
             UNIQUE(user_id, service_slug),
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS telnyx_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            conversation_id TEXT,
+            received_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS garage_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT UNIQUE,
+            assistant_id TEXT NOT NULL DEFAULT '',
+            caller_number TEXT NOT NULL DEFAULT '',
+            called_number TEXT NOT NULL DEFAULT '',
+            customer_name TEXT NOT NULL DEFAULT '',
+            customer_phone TEXT NOT NULL DEFAULT '',
+            customer_email TEXT NOT NULL DEFAULT '',
+            vehicle_registration TEXT NOT NULL DEFAULT '',
+            vehicle_make_model TEXT NOT NULL DEFAULT '',
+            vehicle_year TEXT NOT NULL DEFAULT '',
+            request_type TEXT NOT NULL DEFAULT '',
+            problem_description TEXT NOT NULL DEFAULT '',
+            preferred_date TEXT NOT NULL DEFAULT '',
+            preferred_time TEXT NOT NULL DEFAULT '',
+            safe_to_drive TEXT NOT NULL DEFAULT '',
+            additional_notes TEXT NOT NULL DEFAULT '',
+            call_status TEXT NOT NULL DEFAULT 'details_collected',
+            call_reason TEXT NOT NULL DEFAULT '',
+            duration_seconds INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
 
@@ -392,6 +431,26 @@ def current_user():
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def verify_telnyx_request(raw_body):
+    """Verify Telnyx's Ed25519 signature and reject stale webhook replays."""
+    if not TELNYX_PUBLIC_KEY:
+        return False
+    signature = request.headers.get("telnyx-signature-ed25519", "")
+    timestamp = request.headers.get("telnyx-timestamp", "")
+    try:
+        timestamp_number = int(timestamp)
+        if abs(int(time.time()) - timestamp_number) > 300:
+            return False
+        public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(TELNYX_PUBLIC_KEY))
+        public_key.verify(
+            base64.b64decode(signature),
+            timestamp.encode("utf-8") + b"|" + raw_body,
+        )
+        return True
+    except (ValueError, TypeError, InvalidSignature):
+        return False
 
 
 def token_serializer():
@@ -1496,6 +1555,136 @@ def service_page(service_slug):
     return render_template("service.html", service=service, service_slug=service_slug)
 
 
+@app.route("/telnyx/tools/garage-booking", methods=["POST"])
+def telnyx_garage_booking_tool():
+    """Receive structured booking details collected by the Telnyx assistant."""
+    raw_body = request.get_data(cache=True)
+    if not verify_telnyx_request(raw_body):
+        return jsonify({"error": "Invalid Telnyx signature"}), 401
+
+    data = request.get_json(silent=True) or {}
+    conversation_id = str(
+        data.get("conversation_id")
+        or data.get("telnyx_conversation_id")
+        or request.headers.get("x-telnyx-conversation-id", "")
+    ).strip()[:160]
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+
+    fields = {
+        "customer_name": 120,
+        "customer_phone": 50,
+        "customer_email": 200,
+        "vehicle_registration": 30,
+        "vehicle_make_model": 120,
+        "vehicle_year": 10,
+        "request_type": 80,
+        "problem_description": 1000,
+        "preferred_date": 40,
+        "preferred_time": 40,
+        "safe_to_drive": 30,
+        "additional_notes": 1500,
+    }
+    values = {
+        name: str(data.get(name, "") or "").strip()[:limit]
+        for name, limit in fields.items()
+    }
+    now = utc_now()
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO garage_calls (
+            conversation_id, assistant_id, customer_name, customer_phone,
+            customer_email, vehicle_registration, vehicle_make_model, vehicle_year,
+            request_type, problem_description, preferred_date, preferred_time,
+            safe_to_drive, additional_notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            customer_name=excluded.customer_name,
+            customer_phone=excluded.customer_phone,
+            customer_email=excluded.customer_email,
+            vehicle_registration=excluded.vehicle_registration,
+            vehicle_make_model=excluded.vehicle_make_model,
+            vehicle_year=excluded.vehicle_year,
+            request_type=excluded.request_type,
+            problem_description=excluded.problem_description,
+            preferred_date=excluded.preferred_date,
+            preferred_time=excluded.preferred_time,
+            safe_to_drive=excluded.safe_to_drive,
+            additional_notes=excluded.additional_notes,
+            updated_at=excluded.updated_at
+        """,
+        (
+            conversation_id, TELNYX_ASSISTANT_ID, values["customer_name"],
+            values["customer_phone"], values["customer_email"],
+            values["vehicle_registration"], values["vehicle_make_model"],
+            values["vehicle_year"], values["request_type"],
+            values["problem_description"], values["preferred_date"],
+            values["preferred_time"], values["safe_to_drive"],
+            values["additional_notes"], now, now,
+        ),
+    )
+    db.commit()
+    db.close()
+    return jsonify({
+        "success": True,
+        "message": "The booking request has been saved for the garage team to review."
+    })
+
+
+@app.route("/telnyx/webhooks", methods=["POST"])
+def telnyx_webhooks():
+    """Record signed, idempotent Telnyx call lifecycle events."""
+    raw_body = request.get_data(cache=True)
+    if not verify_telnyx_request(raw_body):
+        return jsonify({"error": "Invalid Telnyx signature"}), 401
+    body = request.get_json(silent=True) or {}
+    event = body.get("data") or {}
+    payload = event.get("payload") or {}
+    event_id = str(event.get("id", "")).strip()
+    event_type = str(event.get("event_type", "")).strip()
+    if not event_id or not event_type:
+        return jsonify({"error": "Invalid event envelope"}), 400
+
+    assistant_id = str(payload.get("assistant_id", ""))
+    if TELNYX_ASSISTANT_ID and assistant_id and assistant_id != TELNYX_ASSISTANT_ID:
+        return jsonify({"received": True, "ignored": True})
+
+    conversation_id = str(payload.get("conversation_id", "")).strip()[:160]
+    db = get_db()
+    inserted = db.execute(
+        "INSERT OR IGNORE INTO telnyx_events (event_id, event_type, conversation_id, received_at) "
+        "VALUES (?, ?, ?, ?)",
+        (event_id, event_type, conversation_id, utc_now()),
+    ).rowcount
+    if inserted and event_type == "call.conversation.ended" and conversation_id:
+        now = utc_now()
+        db.execute(
+            """
+            INSERT INTO garage_calls (
+                conversation_id, assistant_id, caller_number, called_number,
+                call_status, call_reason, duration_seconds, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                assistant_id=excluded.assistant_id,
+                caller_number=excluded.caller_number,
+                called_number=excluded.called_number,
+                call_status='completed',
+                call_reason=excluded.call_reason,
+                duration_seconds=excluded.duration_seconds,
+                updated_at=excluded.updated_at
+            """,
+            (
+                conversation_id, assistant_id, str(payload.get("from", ""))[:50],
+                str(payload.get("to", ""))[:120], str(payload.get("reason", ""))[:80],
+                payload.get("duration_sec"), now, now,
+            ),
+        )
+    db.commit()
+    db.close()
+    return jsonify({"received": True, "duplicate": not bool(inserted)})
+
+
 @app.route("/account", methods=["GET", "POST"])
 @login_required
 def account():
@@ -1813,6 +2002,28 @@ def admin_dashboard():
         "admin.html", stats=stats, users=users, events=events, messages=messages,
         service_requests=service_requests,
     )
+
+
+@app.route("/garage-dashboard")
+@login_required
+@admin_required
+def garage_dashboard():
+    db = get_db()
+    calls = db.execute(
+        "SELECT * FROM garage_calls ORDER BY updated_at DESC LIMIT 100"
+    ).fetchall()
+    stats = {
+        "total_calls": db.execute("SELECT COUNT(*) FROM garage_calls").fetchone()[0],
+        "booking_requests": db.execute(
+            "SELECT COUNT(*) FROM garage_calls WHERE request_type != ''"
+        ).fetchone()[0],
+        "needs_follow_up": db.execute(
+            "SELECT COUNT(*) FROM garage_calls WHERE customer_phone != '' "
+            "AND call_status != 'resolved'"
+        ).fetchone()[0],
+    }
+    db.close()
+    return render_template("garage_dashboard.html", calls=calls, stats=stats)
 
 
 @app.route("/upgrade-demo", methods=["POST"])
