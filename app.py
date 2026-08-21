@@ -67,6 +67,7 @@ SERVICES = {
         "features": [
             "Garage bookings", "AI customer service", "WhatsApp messaging",
             "Vehicle information collection", "Automatic reminders",
+            "Invoices and payment tracking", "Customer and registration search",
             "Repair status messages", "Missed-call recovery", "Garage dashboard",
         ],
     },
@@ -372,6 +373,65 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(service_request_id) REFERENCES service_requests(id)
         );
+
+        CREATE TABLE IF NOT EXISTS garage_customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            garage_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            vehicle_registration TEXT NOT NULL DEFAULT '',
+            vehicle_make_model TEXT NOT NULL DEFAULT '',
+            vehicle_year TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(garage_id) REFERENCES garage_accounts(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS garage_invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            garage_id INTEGER NOT NULL,
+            customer_id INTEGER NOT NULL,
+            invoice_number TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            amount_pence INTEGER NOT NULL DEFAULT 0,
+            amount_paid_pence INTEGER NOT NULL DEFAULT 0,
+            due_date TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'unpaid',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(garage_id, invoice_number),
+            FOREIGN KEY(garage_id) REFERENCES garage_accounts(id),
+            FOREIGN KEY(customer_id) REFERENCES garage_customers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS garage_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            garage_id INTEGER NOT NULL,
+            customer_id INTEGER NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'website',
+            direction TEXT NOT NULL DEFAULT 'outbound',
+            body TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'saved',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(garage_id) REFERENCES garage_accounts(id),
+            FOREIGN KEY(customer_id) REFERENCES garage_customers(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS garage_reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            garage_id INTEGER NOT NULL,
+            customer_id INTEGER NOT NULL,
+            reminder_type TEXT NOT NULL DEFAULT 'appointment',
+            message TEXT NOT NULL,
+            scheduled_for TEXT NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'whatsapp',
+            status TEXT NOT NULL DEFAULT 'scheduled',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(garage_id) REFERENCES garage_accounts(id),
+            FOREIGN KEY(customer_id) REFERENCES garage_customers(id)
+        );
         """
     )
 
@@ -450,6 +510,7 @@ def init_db():
     db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS garage_accounts_user_idx ON garage_accounts(user_id)"
     )
+    db.execute("CREATE INDEX IF NOT EXISTS garage_customers_search_idx ON garage_customers(garage_id, name, vehicle_registration)")
     admin = db.execute("SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,)).fetchone()
     if admin:
         db.execute("UPDATE users SET plan='pro' WHERE id=?", (admin["id"],))
@@ -881,7 +942,7 @@ def garage_profile_is_ready(garage):
 
 def garage_assistant_instructions(garage):
     escalation = garage["escalation_rules"] or "Take a message for the garage team to return the call."
-    return f"""You are the telephone receptionist for {garage['business_name']}.
+    return f"""You are the AI customer service receptionist for {garage['business_name']}.
 
 Business information:
 - Opening hours: {garage['opening_hours']}
@@ -889,7 +950,7 @@ Business information:
 - Booking rules: {garage['booking_rules']}
 - Escalation rules: {escalation}
 
-Answer naturally and briefly. Only describe services listed above. Never invent prices, appointment availability, diagnoses, repair times, or promises. A booking is a request until the garage confirms it.
+Answer customer-service questions naturally and briefly using only the garage information above. Only describe services listed above. Never invent prices, appointment availability, diagnoses, repair times, payment status, or promises. A booking is a request until the garage confirms it.
 
 For a booking or callback request, collect and confirm: customer name, phone number, vehicle registration, vehicle make/model, request type, problem description, preferred date, preferred time, whether the customer believes the vehicle is safe to drive, and any useful notes. Then call save_garage_booking exactly once. If the caller describes danger, smoke, fire, brake failure, or another unsafe condition, do not say the vehicle is safe; advise them not to drive it and to contact emergency or recovery services when appropriate. Follow the escalation rules for anything outside scope. End politely after confirming the next step."""
 
@@ -2104,40 +2165,58 @@ def pricing():
     return render_template("pricing.html", services=SERVICES)
 
 
-@app.route("/services/<service_slug>", methods=["GET", "POST"])
+@app.route("/services/<service_slug>")
 def service_page(service_slug):
     service = SERVICES.get(service_slug)
     if not service:
         abort(404)
 
-    if request.method == "POST":
-        if service_slug == "garage-ai-receptionist" and not session.get("user_id"):
-            flash("Create or sign in to your account before requesting a garage workspace.", "warning")
-            return redirect(url_for("register"))
-        business_name = request.form.get("business_name", "").strip()[:120]
-        contact_name = request.form.get("contact_name", "").strip()[:120]
-        email = request.form.get("email", "").strip().lower()[:200]
-        phone = request.form.get("phone", "").strip()[:50]
-        contact_line = request.form.get("contact_line", "").strip()[:80]
-        setup_notes = request.form.get("setup_notes", "").strip()[:2000]
-        if not business_name or not contact_name or "@" not in email:
-            flash("Enter your business name, contact name and a valid email.", "danger")
-            return redirect(url_for("service_page", service_slug=service_slug) + "#get-started")
-        db = get_db()
-        db.execute(
-            "INSERT INTO service_requests "
-            "(user_id, service_slug, business_name, contact_name, email, phone, contact_line, setup_notes, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (session.get("user_id"), service_slug, business_name, contact_name,
-             email, phone, contact_line, setup_notes, utc_now()),
-        )
-        db.commit()
-        db.close()
-        log_event("service_request", session.get("user_id"), service_slug)
-        flash(f"Your {service['name']} setup request has been received.", "success")
-        return redirect(url_for("service_page", service_slug=service_slug))
-
     return render_template("service.html", service=service, service_slug=service_slug)
+
+
+def upsert_garage_customer(db, garage_id, values):
+    """Create or refresh the garage-owned customer record collected by the assistant."""
+    registration = values.get("vehicle_registration", "").strip().upper()
+    phone = values.get("customer_phone", "").strip()
+    email = values.get("customer_email", "").strip().lower()
+    customer = None
+    if registration:
+        customer = db.execute(
+            "SELECT * FROM garage_customers WHERE garage_id=? AND UPPER(vehicle_registration)=? ORDER BY id LIMIT 1",
+            (garage_id, registration),
+        ).fetchone()
+    if not customer and phone:
+        customer = db.execute(
+            "SELECT * FROM garage_customers WHERE garage_id=? AND phone=? ORDER BY id LIMIT 1",
+            (garage_id, phone),
+        ).fetchone()
+    if not customer and email:
+        customer = db.execute(
+            "SELECT * FROM garage_customers WHERE garage_id=? AND LOWER(email)=? ORDER BY id LIMIT 1",
+            (garage_id, email),
+        ).fetchone()
+    now = utc_now()
+    incoming = (
+        values.get("customer_name", "").strip(), phone, email, registration,
+        values.get("vehicle_make_model", "").strip(), values.get("vehicle_year", "").strip(),
+    )
+    if customer:
+        fields = tuple(value or customer[column] for value, column in zip(
+            incoming, ("name", "phone", "email", "vehicle_registration", "vehicle_make_model", "vehicle_year")
+        ))
+        db.execute(
+            "UPDATE garage_customers SET name=?, phone=?, email=?, vehicle_registration=?, "
+            "vehicle_make_model=?, vehicle_year=?, updated_at=? WHERE id=? AND garage_id=?",
+            (*fields, now, customer["id"], garage_id),
+        )
+        return customer["id"]
+    fields = (incoming[0] or "Customer", *incoming[1:])
+    cursor = db.execute(
+        "INSERT INTO garage_customers (garage_id, name, phone, email, vehicle_registration, "
+        "vehicle_make_model, vehicle_year, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (garage_id, *fields, now, now),
+    )
+    return cursor.lastrowid
 
 
 @app.route("/telnyx/tools/garage-booking", methods=["POST"])
@@ -2225,6 +2304,7 @@ def telnyx_garage_booking_tool(webhook_key=None):
             values["additional_notes"], now, now,
         ),
     )
+    upsert_garage_customer(db, garage["id"], values)
     db.commit()
     db.close()
     return jsonify({
@@ -2656,10 +2736,30 @@ def garage_dashboard():
         db.close()
         abort(403)
     garage_id = garage["id"] if garage else None
+    query = request.args.get("q", "").strip()[:100]
     calls = db.execute(
         "SELECT * FROM garage_calls WHERE (? IS NULL OR garage_id=?) ORDER BY updated_at DESC LIMIT 100",
         (garage_id, garage_id),
     ).fetchall()
+    customer_sql = "SELECT * FROM garage_customers WHERE garage_id=?"
+    customer_values = [garage_id]
+    if query:
+        customer_sql += " AND (LOWER(name) LIKE ? OR UPPER(vehicle_registration) LIKE ?)"
+        customer_values.extend([f"%{query.lower()}%", f"%{query.upper()}%"])
+    customers = db.execute(customer_sql + " ORDER BY updated_at DESC LIMIT 100", customer_values).fetchall()
+    invoices = db.execute(
+        "SELECT i.*, c.name AS customer_name, c.vehicle_registration FROM garage_invoices i "
+        "JOIN garage_customers c ON c.id=i.customer_id WHERE i.garage_id=? ORDER BY i.created_at DESC LIMIT 100",
+        (garage_id,),
+    ).fetchall() if garage_id else []
+    reminders = db.execute(
+        "SELECT r.*, c.name AS customer_name FROM garage_reminders r JOIN garage_customers c ON c.id=r.customer_id "
+        "WHERE r.garage_id=? ORDER BY r.scheduled_for ASC LIMIT 50", (garage_id,),
+    ).fetchall() if garage_id else []
+    messages = db.execute(
+        "SELECT m.*, c.name AS customer_name FROM garage_messages m JOIN garage_customers c ON c.id=m.customer_id "
+        "WHERE m.garage_id=? ORDER BY m.created_at DESC LIMIT 50", (garage_id,),
+    ).fetchall() if garage_id else []
     stats = {
         "total_calls": db.execute(
             "SELECT COUNT(*) FROM garage_calls WHERE (? IS NULL OR garage_id=?)",
@@ -2674,9 +2774,168 @@ def garage_dashboard():
             "AND call_status != 'resolved' AND (? IS NULL OR garage_id=?)",
             (garage_id, garage_id),
         ).fetchone()[0],
+        "outstanding_balance": db.execute(
+            "SELECT COALESCE(SUM(amount_pence-amount_paid_pence),0) FROM garage_invoices WHERE garage_id=?",
+            (garage_id,),
+        ).fetchone()[0] if garage_id else 0,
     }
     db.close()
-    return render_template("garage_dashboard.html", calls=calls, stats=stats, garage=garage)
+    return render_template(
+        "garage_dashboard.html", calls=calls, stats=stats, garage=garage, query=query,
+        customers=customers, invoices=invoices, reminders=reminders, messages=messages,
+    )
+
+
+def owned_garage_customer(db, garage_id, customer_id):
+    return db.execute(
+        "SELECT * FROM garage_customers WHERE id=? AND garage_id=?", (customer_id, garage_id)
+    ).fetchone()
+
+
+@app.route("/garage-customers", methods=["POST"])
+@login_required
+def create_garage_customer():
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    values = {
+        "customer_name": request.form.get("name", "").strip()[:120],
+        "customer_phone": request.form.get("phone", "").strip()[:50],
+        "customer_email": request.form.get("email", "").strip()[:200],
+        "vehicle_registration": request.form.get("vehicle_registration", "").strip()[:30],
+        "vehicle_make_model": request.form.get("vehicle_make_model", "").strip()[:120],
+        "vehicle_year": request.form.get("vehicle_year", "").strip()[:10],
+    }
+    if not values["customer_name"]:
+        flash("Customer name is required.", "danger")
+        return redirect(url_for("garage_dashboard") + "#customers")
+    db = get_db()
+    upsert_garage_customer(db, garage["id"], values)
+    db.commit()
+    db.close()
+    flash("Customer and vehicle information saved.", "success")
+    return redirect(url_for("garage_dashboard") + "#customers")
+
+
+@app.route("/garage-invoices", methods=["POST"])
+@login_required
+def create_garage_invoice():
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    try:
+        customer_id = int(request.form.get("customer_id", "0"))
+        amount_pence = int(round(float(request.form.get("amount", "0")) * 100))
+    except (TypeError, ValueError):
+        abort(400)
+    db = get_db()
+    customer = owned_garage_customer(db, garage["id"], customer_id)
+    if not customer or amount_pence <= 0:
+        db.close()
+        abort(400)
+    number = request.form.get("invoice_number", "").strip()[:50] or f"INV-{secrets.token_hex(4).upper()}"
+    try:
+        db.execute(
+            "INSERT INTO garage_invoices (garage_id, customer_id, invoice_number, description, amount_pence, "
+            "due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (garage["id"], customer_id, number, request.form.get("description", "").strip()[:1000],
+             amount_pence, request.form.get("due_date", "").strip()[:10], utc_now(), utc_now()),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.close()
+        flash("That invoice number is already in use.", "danger")
+        return redirect(url_for("garage_dashboard") + "#invoices")
+    db.close()
+    flash("Invoice created.", "success")
+    return redirect(url_for("garage_dashboard") + "#invoices")
+
+
+@app.route("/garage-invoices/<int:invoice_id>/payment", methods=["POST"])
+@login_required
+def record_garage_invoice_payment(invoice_id):
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    try:
+        paid_pence = int(round(float(request.form.get("amount_paid", "0")) * 100))
+    except (TypeError, ValueError):
+        abort(400)
+    db = get_db()
+    invoice = db.execute("SELECT * FROM garage_invoices WHERE id=? AND garage_id=?", (invoice_id, garage["id"])).fetchone()
+    if not invoice or paid_pence < 0:
+        db.close()
+        abort(404)
+    paid_pence = min(paid_pence, invoice["amount_pence"])
+    status = "paid" if paid_pence >= invoice["amount_pence"] else ("part_paid" if paid_pence else "unpaid")
+    db.execute(
+        "UPDATE garage_invoices SET amount_paid_pence=?, status=?, updated_at=? WHERE id=? AND garage_id=?",
+        (paid_pence, status, utc_now(), invoice_id, garage["id"]),
+    )
+    db.commit()
+    db.close()
+    flash("Customer payment status updated.", "success")
+    return redirect(url_for("garage_dashboard") + "#invoices")
+
+
+@app.route("/garage-messages", methods=["POST"])
+@login_required
+def create_garage_message():
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    try:
+        customer_id = int(request.form.get("customer_id", "0"))
+    except ValueError:
+        abort(400)
+    channel = request.form.get("channel", "website")
+    body = request.form.get("body", "").strip()[:2000]
+    if channel not in {"website", "whatsapp"} or not body:
+        abort(400)
+    db = get_db()
+    customer = owned_garage_customer(db, garage["id"], customer_id)
+    if not customer:
+        db.close()
+        abort(404)
+    status = "ready_to_send" if channel == "whatsapp" else "saved"
+    db.execute(
+        "INSERT INTO garage_messages (garage_id, customer_id, channel, body, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (garage["id"], customer_id, channel, body, status, utc_now()),
+    )
+    db.commit()
+    db.close()
+    flash("Message saved. Use the WhatsApp action to send WhatsApp drafts.", "success")
+    return redirect(url_for("garage_dashboard") + "#messages")
+
+
+@app.route("/garage-reminders", methods=["POST"])
+@login_required
+def create_garage_reminder():
+    garage = current_garage()
+    if not garage:
+        abort(403)
+    try:
+        customer_id = int(request.form.get("customer_id", "0"))
+    except ValueError:
+        abort(400)
+    message = request.form.get("message", "").strip()[:1000]
+    scheduled_for = request.form.get("scheduled_for", "").strip()[:30]
+    channel = request.form.get("channel", "whatsapp")
+    db = get_db()
+    customer = owned_garage_customer(db, garage["id"], customer_id)
+    if not customer or not message or not scheduled_for or channel not in {"website", "whatsapp"}:
+        db.close()
+        abort(400)
+    db.execute(
+        "INSERT INTO garage_reminders (garage_id, customer_id, reminder_type, message, scheduled_for, channel, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (garage["id"], customer_id, request.form.get("reminder_type", "appointment")[:40],
+         message, scheduled_for, channel, utc_now()),
+    )
+    db.commit()
+    db.close()
+    flash("Automatic reminder scheduled.", "success")
+    return redirect(url_for("garage_dashboard") + "#reminders")
 
 
 @app.route("/garage-settings", methods=["GET", "POST"])

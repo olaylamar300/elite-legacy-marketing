@@ -23,27 +23,12 @@
         <ul class="check-list">{% for feature in service.features %}<li>{{ feature }}</li>{% endfor %}</ul>
     </div>
     <div class="panel">
-        <h2>Professional onboarding with human oversight</h2>
-        <p class="muted">We collect your requirements before activation so messages, call handling and escalation rules reflect your real business. AI output and calls should be monitored and reviewed.</p>
+        <h2>Immediate access after subscription</h2>
+        <p class="muted">After payment setup, your private workspace opens immediately so you can add garage details, customers, invoices and booking rules. The dedicated phone assistant is created automatically once the required profile is complete.</p>
         <p class="fine-print">Phone services require a compatible phone number and voice provider. Availability is confirmed during onboarding.</p>
         <p class="fine-print"><strong>Keep your existing number:</strong> customers can request call forwarding, number porting or a compatible existing business line. WhatsApp connections require access to the business’s own eligible WhatsApp number and approval through the selected provider.</p>
     </div>
 </section>
 
-<section id="get-started" class="section service-onboarding">
-    <div>
-        <span class="eyebrow">TAILORED IMPLEMENTATION</span>
-        <h2>Discuss your garage’s requirements with us.</h2>
-        <p class="muted">Use this form if you need compatibility advice before subscribing. Paying customers receive their private workspace automatically.</p>
-    </div>
-    <form class="panel form-grid" method="post">
-        <label>Business name<input name="business_name" required></label>
-        <label>Your name<input name="contact_name" required></label>
-        <label>Email<input type="email" name="email" value="{{ current_user['email'] if current_user else '' }}" required></label>
-        <label>Phone<input type="tel" name="phone"></label>
-        <label>Existing business contact line<input type="tel" name="contact_line" placeholder="Number to connect, if applicable"></label>
-        <label class="full-field">What should this service handle?<textarea name="setup_notes" rows="5" placeholder="Opening hours, common enquiries, escalation rules and anything else we should know"></textarea></label>
-        <button class="button full-field" type="submit">Request {{ service.name }} setup</button>
-    </form>
-</section>
+<section class="final-cta"><span class="eyebrow">START IMMEDIATELY</span><h2>No application or manual approval required.</h2><p>Create your account, subscribe securely and enter your private garage workspace straight away.</p>{% if current_user %}<form method="post" action="{{ url_for('create_gocardless_checkout') }}"><button class="button" type="submit">Subscribe by Direct Debit</button></form>{% else %}<a class="button" href="{{ url_for('register') }}">Create account to subscribe</a>{% endif %}</section>
 {% endblock %}

@@ -85,27 +85,13 @@ class PlatformFeatureTests(unittest.TestCase):
         self.register()
         self.assertEqual(self.client.get("/admin").status_code, 403)
 
-    def test_service_setup_request_is_saved(self):
+    def test_garage_service_has_direct_subscription_without_application(self):
         self.register()
-        response = self.client.post(
-            "/services/garage-ai-receptionist",
-            data={
-                "business_name": "Elite Garage",
-                "contact_name": "Owner",
-                "email": "garage@example.com",
-                "phone": "07123456789",
-                "contact_line": "020 7946 0123",
-                "setup_notes": "Capture registrations and service requests.",
-            },
-            follow_redirects=True,
-        )
-        self.assertIn(b"setup request has been received", response.data)
-        db = app_module.get_db()
-        saved = db.execute("SELECT * FROM service_requests").fetchone()
-        db.close()
-        self.assertEqual(saved["service_slug"], "garage-ai-receptionist")
-        self.assertEqual(saved["business_name"], "Elite Garage")
-        self.assertEqual(saved["contact_line"], "020 7946 0123")
+        response = self.client.get("/services/garage-ai-receptionist")
+        self.assertIn(b"No application or manual approval required", response.data)
+        self.assertIn(b"Subscribe by Direct Debit", response.data)
+        self.assertNotIn(b"Request Garage AI Receptionist setup", response.data)
+        self.assertEqual(self.client.post("/services/garage-ai-receptionist").status_code, 405)
 
     def test_admin_claim_grants_all_services_and_expires(self):
         with patch.object(app_module, "send_account_email", return_value=True):
@@ -326,6 +312,49 @@ class PlatformFeatureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"First Customer", response.data)
         self.assertNotIn(b"Second Customer", response.data)
+
+    def test_customer_invoice_message_and_reminder_data_stays_in_its_garage(self):
+        first_user, first_garage = self.create_test_garage("accounts@example.com", "assistant-accounts")
+        second_user, _ = self.create_test_garage("other@example.com", "assistant-other")
+        with self.client.session_transaction() as session:
+            session["user_id"] = first_user
+        self.assertEqual(self.client.post("/garage-customers", data={
+            "name": "Alex Driver", "phone": "+447123456789",
+            "vehicle_registration": "AB12 CDE", "vehicle_make_model": "BMW 3 Series",
+        }).status_code, 302)
+        db = app_module.get_db()
+        customer = db.execute("SELECT * FROM garage_customers WHERE garage_id=?", (first_garage,)).fetchone()
+        db.close()
+        self.assertIsNotNone(customer)
+        self.assertEqual(self.client.post("/garage-invoices", data={
+            "customer_id": customer["id"], "invoice_number": "INV-1001",
+            "amount": "250.00", "description": "MOT and service",
+        }).status_code, 302)
+        db = app_module.get_db()
+        invoice = db.execute("SELECT * FROM garage_invoices WHERE garage_id=?", (first_garage,)).fetchone()
+        db.close()
+        self.client.post(f"/garage-invoices/{invoice['id']}/payment", data={"amount_paid": "100.00"})
+        self.client.post("/garage-messages", data={
+            "customer_id": customer["id"], "channel": "whatsapp", "body": "Your car is ready.",
+        })
+        self.client.post("/garage-reminders", data={
+            "customer_id": customer["id"], "reminder_type": "mot", "channel": "whatsapp",
+            "scheduled_for": "2026-09-01T09:00", "message": "Your MOT is due.",
+        })
+        response = self.client.get("/garage-dashboard?q=AB12")
+        self.assertIn(b"Alex Driver", response.data)
+        self.assertIn(b"INV-1001", response.data)
+        self.assertIn(b"100.00", response.data)
+        self.assertIn(b"150.00", response.data)
+        self.assertIn(b"Your car is ready", response.data)
+        with self.client.session_transaction() as session:
+            session["user_id"] = second_user
+        self.assertEqual(self.client.post("/garage-invoices", data={
+            "customer_id": customer["id"], "amount": "1", "description": "Not permitted",
+        }).status_code, 400)
+        other_dashboard = self.client.get("/garage-dashboard")
+        self.assertNotIn(b"Alex Driver", other_dashboard.data)
+        self.assertNotIn(b"INV-1001", other_dashboard.data)
 
     def test_paid_garage_subscription_provisions_workspace_and_cancel_pauses_it(self):
         with patch.object(app_module, "send_account_email", return_value=True):
